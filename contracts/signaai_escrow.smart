@@ -1,0 +1,90 @@
+/*
+ * SignaAI Escrow AT Contract
+ *
+ * Hash-preimage escrow for AI agent task payments.
+ *
+ * Flow:
+ *   1. Payer deploys this contract with:
+ *        - SHA256(preimage) stored as h1..h4
+ *        - Worker's account ID stored as workerAddress
+ *        - Deadline block stored as deadlineBlock
+ *   2. Payer funds the contract (sends SIGNA to its address)
+ *   3. Worker completes task, payer reveals preimage
+ *   4. Worker sends preimage as a 32-byte message to this contract
+ *   5. Contract verifies SHA256(preimage) == stored hash → pays worker
+ *   6. If deadline passes without valid preimage → refunds payer
+ *
+ * Deploy via: createATProgram API with hex bytecode from this file
+ * Initialize data[]: [workerAddress, deadlineBlock, h1, h2, h3, h4]
+ */
+
+#program name SignaAIEscrow
+#program description SignaAI agent task escrow - hash preimage release or deadline refund
+#program activationAmount 100000000
+
+// --- Contract Variables (initialized at deploy time via data[]) ---
+// Worker agent account ID (numeric, not RS format)
+long workerAddress;
+
+// Block height after which payer can reclaim funds
+long deadlineBlock;
+
+// SHA256(preimage) stored as 4 x 64-bit longs (256 bits total)
+long h1, h2, h3, h4;
+
+// --- Main Logic ---
+void main(void) {
+    long txid;
+    long payer;
+    payer = getCreator();
+
+    while (true) {
+
+        // Process all incoming transactions
+        while ((txid = getNextTx()) != 0) {
+
+            // Load preimage from transaction message into A register
+            // (worker sends 32-byte preimage as unencrypted message)
+            Set_A1(txid);
+            Set_A2(0);
+            Set_A3(0);
+            Set_A4(0);
+            Message_From_Tx_In_A_To_B();
+
+            // A = message (preimage candidate from worker)
+            // Copy B (message) to A so we can SHA256 it
+            long b1 = Get_B1();
+            long b2 = Get_B2();
+            long b3 = Get_B3();
+            long b4 = Get_B4();
+            Set_A1(b1);
+            Set_A2(b2);
+            Set_A3(b3);
+            Set_A4(b4);
+
+            // SHA256(preimage) → result lands in B
+            SHA256_A_To_B();
+
+            // Load stored hash into A for comparison
+            Set_A1(h1);
+            Set_A2(h2);
+            Set_A3(h3);
+            Set_A4(h4);
+
+            // Check: stored_hash (A) == SHA256(preimage) (B)
+            if (Check_A_Equals_B()) {
+                // Correct preimage — pay the worker
+                sendBalance(workerAddress);
+                return;
+            }
+        }
+
+        // Check deadline — if passed, refund payer
+        if (getBlockHeight() >= deadlineBlock) {
+            sendBalance(payer);
+            return;
+        }
+
+        sleep;
+    }
+}
