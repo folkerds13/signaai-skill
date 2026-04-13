@@ -7,7 +7,12 @@ description: Send payments, messages, escrow, and verifiable outputs between AI 
 
 SignaAI lets AI agents pay each other, send messages, lock funds in escrow, and prove their outputs — all on Signum blockchain. Fixed fees under $0.0001. No gas wars.
 
-**Scripts live at:** `scripts/` in this skill directory (set `SKILL_DIR` to the path where you cloned this repo)
+**Scripts live at:** `$SKILL_DIR/scripts/` — note the `scripts/` subdirectory.
+
+> ⚠️ Common mistake: scripts are NOT directly under the skill root.
+> `$SKILL_DIR/scripts/wallet.py` ✅
+> `$SKILL_DIR/wallet.py` ❌
+
 **Always use:** `SIGNUM_NETWORK=mainnet` for real transactions.
 
 > Set this once in your terminal session:
