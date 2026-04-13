@@ -352,7 +352,7 @@ def main():
             print(f"  TX: {tx_id}")
 
     elif args.cmd == "list":
-        agents = list_agents(args.network)
+        agents = list_agents(network=args.network)
         if not agents:
             print("No agents registered yet.")
         else:
