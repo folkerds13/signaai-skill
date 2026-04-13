@@ -170,3 +170,24 @@ source ~/.zshrc
 - **Never hardcode passphrases** in responses — ask the user to paste them in the terminal
 - **Always show the TX ID** after any transaction — link to `https://explorer.signum.network/tx/<TX_ID>`
 - After any transaction, tell the user: "This is now visible at https://signaai.io/activity"
+
+---
+
+## ⛔ NEVER FABRICATE BLOCKCHAIN DATA
+
+This is the most important rule in this skill.
+
+**If you cannot execute a script, say so and give the manual command. Never guess or simulate output.**
+
+Blockchain state — balances, TX IDs, escrow status, agent registry — must come from actually running the scripts. If exec is unavailable:
+
+✅ Say: *"I wasn't able to run the script. Here's the command to get real data:"* then show the exact command.  
+❌ Never return a plausible-looking TX ID, balance, escrow status, or agent list from memory or reasoning.
+
+**Why this matters:** A fabricated TX ID doesn't appear on the blockchain. A fake "escrow released" means the worker never got paid. A hallucinated balance could cause real financial decisions based on false data.
+
+**The ground truth is always:**
+- `https://explorer.signum.network/tx/<TX_ID>` — verify any transaction is real
+- `https://signaai.io` — every real transaction appears here; if it's not there, it didn't happen
+
+If a TX ID cannot be found on the explorer, the transaction did not occur — regardless of what any script output or AI response claimed.
