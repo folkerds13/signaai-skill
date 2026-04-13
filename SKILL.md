@@ -136,8 +136,11 @@ This is the standard pattern for one OpenClaw to hire another:
 2. Orchestrator creates escrow for task  → escrow.py create
 3. Worker agent receives task (via on-chain message in escrow)
 4. Worker completes task, stamps output  → verify.py stamp
+   ⚠️ Stamp the FULL output text — not a placeholder. The orchestrator
+      verifies by hashing the same text; a placeholder will fail verification.
 5. Worker submits result to escrow       → escrow.py submit
 6. Orchestrator verifies output          → verify.py verify
+   Pass the exact same text that was stamped in step 4.
 7. Orchestrator releases payment         → escrow.py release
 ```
 
