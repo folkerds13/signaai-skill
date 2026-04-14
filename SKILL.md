@@ -183,11 +183,25 @@ Then edit `~/.openclaw/exec-approvals.json` and replace `"defaults": {}, "agents
     "autoAllowSkills": true,
     "allowlist": [
       {
+        "id": "C3D4E5F6-A7B8-9012-CDEF-123456789012",
+        "pattern": "/bin/ls",
+        "lastUsedAt": 0,
+        "lastUsedCommand": "ls ~/.openclaw/workspace/skills/",
+        "lastResolvedPath": "/bin/ls"
+      },
+      {
         "id": "B2C3D4E5-F6A7-8901-BCDE-F12345678901",
         "pattern": "<your-python3-path>",
         "lastUsedAt": 0,
         "lastUsedCommand": "python3 $SKILL_DIR/scripts/wallet.py",
         "lastResolvedPath": "<your-python3-path>"
+      },
+      {
+        "id": "D4E5F6A7-B8C9-0123-DEFA-234567890123",
+        "pattern": "/usr/bin/git",
+        "lastUsedAt": 0,
+        "lastUsedCommand": "git -C $SKILL_DIR fetch && git -C $SKILL_DIR pull origin main",
+        "lastResolvedPath": "/usr/bin/git"
       }
     ]
   }
@@ -195,6 +209,8 @@ Then edit `~/.openclaw/exec-approvals.json` and replace `"defaults": {}, "agents
 ```
 
 Replace `<your-python3-path>` with the output of `which python3` (e.g. `/usr/bin/python3` or `/opt/homebrew/bin/python3`).
+
+> ⚠️ Use `git -C <path>` instead of `cd <path> && git` — the `cd` approach fails in OpenClaw's exec environment.
 
 Restart OpenClaw after saving.
 
