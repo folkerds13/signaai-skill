@@ -167,6 +167,24 @@ openclaw gateway restart
 
 That's it. OpenClaw can now run all skill scripts autonomously without prompting.
 
+### Enable Telegram approval buttons (recommended)
+
+If you use OpenClaw via Telegram, add your Telegram user ID as an approver so exec approval requests show up as **Allow Once / Allow Always / Deny** buttons in chat instead of requiring typed commands.
+
+Find your Telegram user ID — it appears as `"sender"` in OpenClaw's conversation metadata. Then add it to `openclaw.json`:
+
+```json
+"telegram": {
+  ...
+  "execApprovals": {
+    "enabled": true,
+    "approvers": [YOUR_TELEGRAM_USER_ID]
+  }
+}
+```
+
+Restart OpenClaw after saving. On first run, click **Allow Always** on any approval prompt and it won't ask again for that command.
+
 ### Manual exec setup (if you prefer not to run the script)
 
 Find your python3 path first:
