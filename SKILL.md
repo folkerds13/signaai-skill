@@ -159,6 +159,45 @@ echo 'export SKILL_DIR=~/.openclaw/workspace/skills/signaai' >> ~/.zshrc
 source ~/.zshrc
 ```
 
+### Enable autonomous exec (required for OpenClaw to run scripts without prompting)
+
+Find your python3 path first:
+```bash
+which python3
+```
+
+Then edit `~/.openclaw/exec-approvals.json` and replace `"defaults": {}, "agents": {}` with:
+
+```json
+"defaults": {
+  "security": "allowlist",
+  "ask": "on-miss",
+  "askFallback": "deny",
+  "autoAllowSkills": true
+},
+"agents": {
+  "main": {
+    "security": "allowlist",
+    "ask": "on-miss",
+    "askFallback": "deny",
+    "autoAllowSkills": true,
+    "allowlist": [
+      {
+        "id": "B2C3D4E5-F6A7-8901-BCDE-F12345678901",
+        "pattern": "<your-python3-path>",
+        "lastUsedAt": 0,
+        "lastUsedCommand": "python3 $SKILL_DIR/scripts/wallet.py",
+        "lastResolvedPath": "<your-python3-path>"
+      }
+    ]
+  }
+}
+```
+
+Replace `<your-python3-path>` with the output of `which python3` (e.g. `/usr/bin/python3` or `/opt/homebrew/bin/python3`).
+
+Restart OpenClaw after saving.
+
 ---
 
 ## Key Numbers
