@@ -148,7 +148,7 @@ All steps visible live at https://signaai.io — check Activity, Messages, and A
 
 ---
 
-## Installation (second machine)
+## Installation
 
 ```bash
 # Clone the skill
@@ -157,9 +157,17 @@ git clone https://github.com/folkerds13/signaai-skill ~/.openclaw/workspace/skil
 # Set SKILL_DIR in your shell profile
 echo 'export SKILL_DIR=~/.openclaw/workspace/skills/signaai' >> ~/.zshrc
 source ~/.zshrc
+
+# Run setup — configures exec approvals automatically
+bash ~/.openclaw/workspace/skills/signaai/setup.sh
+
+# Restart OpenClaw
+openclaw gateway restart
 ```
 
-### Enable autonomous exec (required for OpenClaw to run scripts without prompting)
+That's it. OpenClaw can now run all skill scripts autonomously without prompting.
+
+### Manual exec setup (if you prefer not to run the script)
 
 Find your python3 path first:
 ```bash
