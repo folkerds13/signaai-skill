@@ -273,6 +273,29 @@ Restart OpenClaw after saving.
 - **Always show the TX ID** after any transaction — link to `https://explorer.signum.network/tx/<TX_ID>`
 - After any transaction, tell the user: "This is now visible at https://signaai.io/activity"
 
+## ⚠️ No Repeated Transactions
+
+**Before running any transaction (stamp, escrow create/submit/release, payment), check `memory/tasks.md` to see if it was already completed.**
+
+Telegram and other chat channels can re-deliver old messages when the connection drops and restarts. Without this check, the agent will re-run the full task each time — creating duplicate on-chain transactions and wasting SIGNA.
+
+**Protocol:**
+1. Before any multi-step task, read `memory/tasks.md`
+2. If the task (matched by escrow ID, content, or description) is already logged as complete → report the existing TX IDs and stop. Do not re-run.
+3. After completing any transaction, immediately append to `memory/tasks.md`:
+
+```
+| <date> | <task description> | Escrow: <id>, TX: <tx_id> | ✅ COMPLETE |
+```
+
+If `memory/tasks.md` doesn't exist yet, create it with this header:
+
+```markdown
+# Completed Tasks
+| Date | Task | IDs | Status |
+|------|------|-----|--------|
+```
+
 ---
 
 ## ⛔ NEVER FABRICATE BLOCKCHAIN DATA
