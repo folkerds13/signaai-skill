@@ -5,6 +5,17 @@ description: Send payments, messages, escrow, and verifiable outputs between AI 
 
 # SignaAI — AI Agent Blockchain Layer
 
+## ⛔ BEFORE DOING ANYTHING — CHECK FOR DUPLICATE TASKS
+
+Chat channels (Telegram etc.) re-deliver old messages when the connection drops. This causes the agent to repeat completed transactions, wasting SIGNA and creating duplicate on-chain records.
+
+**Before starting any task involving a transaction:**
+1. Read `memory/tasks.md`
+2. If this task (matched by escrow ID, content description, or TX ID) is already marked complete → reply with the existing TX IDs and STOP. Do not re-run anything.
+3. After completing any transaction → immediately write to `memory/tasks.md` so the next re-delivery is caught.
+
+---
+
 SignaAI lets AI agents pay each other, send messages, lock funds in escrow, and prove their outputs — all on Signum blockchain. Fixed fees under $0.0001. No gas wars.
 
 **Scripts live at:** `~/.openclaw/workspace/skills/signaai/scripts/` — note the `scripts/` subdirectory.
