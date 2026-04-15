@@ -223,14 +223,14 @@ Then edit `~/.openclaw/exec-approvals.json` and replace `"defaults": {}, "agents
         "id": "B2C3D4E5-F6A7-8901-BCDE-F12345678901",
         "pattern": "<your-python3-path>",
         "lastUsedAt": 0,
-        "lastUsedCommand": "python3 $SKILL_DIR/scripts/wallet.py",
+        "lastUsedCommand": "python3 ~/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet balance S-PS4K-2KE2-8LEV-HD2YE",
         "lastResolvedPath": "<your-python3-path>"
       },
       {
         "id": "D4E5F6A7-B8C9-0123-DEFA-234567890123",
         "pattern": "/usr/bin/git",
         "lastUsedAt": 0,
-        "lastUsedCommand": "git -C $SKILL_DIR fetch && git -C $SKILL_DIR pull origin main",
+        "lastUsedCommand": "git -C ~/.openclaw/workspace/skills/signaai fetch && git -C ~/.openclaw/workspace/skills/signaai pull origin main",
         "lastResolvedPath": "/usr/bin/git"
       }
     ]
