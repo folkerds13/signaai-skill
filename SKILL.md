@@ -37,6 +37,20 @@ SignaAI lets AI agents pay each other, send messages, lock funds in escrow, and 
 
 ---
 
+## Quick Commands
+
+These phrases trigger the full workflow automatically — no need to spell out each step.
+
+| Say this | What happens |
+|----------|--------------|
+| `Run a SignaAI two-agent research demo on: <topic>` | Creates escrow, both agents research independently, both stamp on-chain, orchestrator verifies and releases payment |
+| `Stamp this on-chain: <content>` | Stamps content with verify.py, waits 4 min, self-verifies, returns TX ID |
+| `Check escrow <escrow_id>` | Returns current escrow status and all on-chain events |
+| `Pay worker <amount> SIGNA for: <task>` | Creates escrow for worker agent S-44S7-32XB-5DM5-5AL3K |
+| `What's my balance` | Returns balance for the orchestrator wallet |
+
+---
+
 ## Known Wallets
 
 | Agent | Address |
