@@ -5,7 +5,6 @@ set -e
 
 SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/workspace/skills/signaai}"
 APPROVALS_FILE="$HOME/.openclaw/exec-approvals.json"
-CRON_FILE="$HOME/.openclaw/cron/jobs.json"
 PLIST_FILE="$HOME/Library/LaunchAgents/io.signaai.listener.plist"
 LOG_FILE="$HOME/.openclaw/logs/signaai-listener.log"
 WORKER_ADDRESS=""
@@ -167,66 +166,6 @@ PLIST
     echo "  Skipped. To set up later: re-run setup.sh"
   fi
 fi
-
-# ── 4. OpenClaw cron job ───────────────────────────────────────────────────────
-echo ""
-echo "Configuring OpenClaw cron job..."
-python3 - <<PYEOF
-import json, uuid, os, time
-
-cron_path = "$CRON_FILE"
-if not os.path.exists(cron_path):
-    print("  Skipped — $CRON_FILE not found (OpenClaw not fully initialized yet).")
-    print("  Re-run setup.sh after first OpenClaw launch to add the cron job.")
-    exit(0)
-
-with open(cron_path) as f:
-    data = json.load(f)
-
-data.setdefault("jobs", [])
-
-JOB_NAME = "SignaAI — Process Pending Tasks (every 5 min)"
-already = any(j.get("name") == JOB_NAME for j in data["jobs"])
-
-if already:
-    print(f"  Already configured: {JOB_NAME}")
-else:
-    pending_file = os.path.expanduser("$HOME/.openclaw/workspace/signaai-pending-tasks.json")
-    now_ms = int(time.time() * 1000)
-    data["jobs"].append({
-        "id": str(uuid.uuid4()),
-        "agentId": "main",
-        "sessionKey": "agent:main:main",
-        "name": JOB_NAME,
-        "enabled": False,
-        "createdAtMs": now_ms,
-        "updatedAtMs": now_ms,
-        "schedule": {
-            "kind": "cron",
-            "expr": "*/5 * * * *",
-            "tz": "America/New_York"
-        },
-        "sessionTarget": "isolated",
-        "wakeMode": "now",
-        "payload": {
-            "kind": "agentTurn",
-            "message": f"Check {pending_file} for any tasks with status 'pending'. If none exist or the file doesn't exist, do nothing and stop. If a pending task is found, process the first one using the SignaAI skill: research the task topic thoroughly, stamp your answer on-chain with verify.py, wait 4 minutes for block confirmation, self-verify the stamp, submit the result to escrow with escrow.py, then mark the task complete in the file. Do NOT fabricate TX IDs — if any script fails, stop and report which step failed.",
-            "timeoutSeconds": 600
-        },
-        "delivery": {"mode": "announce"},
-        "state": {
-            "lastRunAtMs": 0,
-            "lastStatus": "ok",
-            "lastDurationMs": 0,
-            "consecutiveErrors": 0
-        }
-    })
-
-    with open(cron_path, "w") as f:
-        json.dump(data, f, indent=2)
-    print(f"  Added: {JOB_NAME}")
-
-PYEOF
 
 echo ""
 echo "Done. Restart OpenClaw to apply:"
