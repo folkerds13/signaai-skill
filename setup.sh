@@ -8,6 +8,15 @@ APPROVALS_FILE="$HOME/.openclaw/exec-approvals.json"
 CRON_FILE="$HOME/.openclaw/cron/jobs.json"
 PLIST_FILE="$HOME/Library/LaunchAgents/io.signaai.listener.plist"
 LOG_FILE="$HOME/.openclaw/logs/signaai-listener.log"
+WORKER_ADDRESS=""
+
+# Parse flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --address) WORKER_ADDRESS="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 
 echo "SignaAI Skill Setup"
 echo "==================="
@@ -105,12 +114,14 @@ if [ "$(uname)" = "Darwin" ]; then
   echo ""
   echo "Setting up listener daemon..."
 
-  # Ask which wallet address to monitor
-  echo ""
-  echo "Which wallet should this machine monitor for incoming tasks?"
-  echo "  (Find your address by running: python3 $SKILL_DIR/scripts/wallet.py --network mainnet myaddress <passphrase>)"
-  echo -n "Wallet address [leave blank to skip]: "
-  read -r WORKER_ADDRESS
+  # Prompt for wallet address only if running interactively and none provided
+  if [ -z "$WORKER_ADDRESS" ] && [ -t 0 ]; then
+    echo ""
+    echo "Which wallet should this machine monitor for incoming tasks?"
+    echo "  (Find yours: python3 $SKILL_DIR/scripts/wallet.py --network mainnet myaddress <passphrase>)"
+    echo -n "Wallet address [leave blank to skip]: "
+    read -r WORKER_ADDRESS
+  fi
 
   if [ -n "$WORKER_ADDRESS" ]; then
     mkdir -p "$(dirname "$LOG_FILE")"
