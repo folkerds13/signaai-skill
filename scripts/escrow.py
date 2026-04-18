@@ -100,7 +100,18 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         return None, f"Failed to record escrow: {record_result.get('error')}"
     record_tx = record_result.get("transaction")
 
-    # Step 2: Transfer funds to escrow operator (using same wallet for prototype)
+    # Step 2: Notify the worker directly so their listener can detect the task
+    print(f"  Notifying worker...")
+    time.sleep(2)
+    notify_message = f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}"
+    api.post("sendMessage",
+             secretPhrase=payer_passphrase,
+             recipient=worker_address,
+             message=notify_message,
+             messageIsText="true",
+             feeNQT=FEE_MESSAGE)
+
+    # Step 3: Transfer funds to escrow operator (using same wallet for prototype)
     # In production: this sends to the AT contract address
     print(f"  Transferring {amount_signa} SIGNA to escrow...")
     time.sleep(2)  # brief pause between transactions

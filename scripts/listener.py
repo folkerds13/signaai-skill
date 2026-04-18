@@ -35,7 +35,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, ts, ok
 
-ESCROW_PREFIX = "ESCROW:CREATE:"
+ESCROW_PREFIX = "ESCROW:ASSIGN:"
 STATE_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
 TRIGGER_FILE  = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
 OPENCLAW_CFG  = os.path.expanduser("~/.openclaw/openclaw.json")
@@ -139,6 +139,7 @@ def handle_transaction(tx, address, state, tg_token, tg_chat_id):
     if not msg.startswith(ESCROW_PREFIX):
         return False
 
+    # Format: ESCROW:ASSIGN:<escrow_id>:<task_hash>
     parts = msg[len(ESCROW_PREFIX):].split(":")
     escrow_id = parts[0] if parts else "unknown"
     sender = tx.get("senderRS", tx.get("sender", "unknown"))
