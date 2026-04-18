@@ -280,6 +280,33 @@ Restart OpenClaw after saving.
 
 ---
 
+## 7 — Task Listener (Autonomous Worker)
+
+The listener watches a worker wallet for incoming `ESCROW:CREATE` messages and writes new tasks to a trigger file — no AI calls, no cost, pure Python.
+
+### Run continuously (recommended)
+```bash
+python3 ~/.openclaw/workspace/skills/signaai/scripts/listener.py --address <worker_address>
+```
+
+### Run once (for cron)
+```bash
+python3 ~/.openclaw/workspace/skills/signaai/scripts/listener.py --address <worker_address> --once
+```
+
+### OpenClaw cron job to process pending tasks
+Add this to OpenClaw's cron (every 5 minutes) to have the agent automatically pick up and execute tasks detected by the listener:
+
+> "Check `~/.openclaw/workspace/signaai-pending-tasks.json` for any tasks with status 'pending'. If found, process the first one using the SignaAI skill — research the task, stamp your answer, wait 4 minutes, self-verify, submit to escrow. Mark the task complete when done."
+
+**How it works:**
+1. `listener.py` polls blockchain every 2 minutes — no AI cost
+2. Detects new `ESCROW:CREATE` message → writes task to trigger file
+3. OpenClaw cron fires → reads trigger file → executes task
+4. AI only activates when real work exists — not on every heartbeat
+
+---
+
 ## Key Numbers
 
 | Item | Value |
