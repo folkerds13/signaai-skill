@@ -170,8 +170,8 @@ def submit_result(worker_passphrase, escrow_id, result_content,
 
     time.sleep(2)
 
-    # Submit to escrow record via sendMessage
-    message = f"{ESCROW_PREFIX}SUBMIT:{escrow_id}:{result_hash}"
+    # Submit to escrow record via sendMessage — include proof TX for on-chain hash verification
+    message = f"{ESCROW_PREFIX}SUBMIT:{escrow_id}:{result_hash}:{proof['tx_id']}"
     print(f"  Submitting result to escrow...")
     submit_result_tx = api.post("sendMessage",
                                 secretPhrase=worker_passphrase,
@@ -220,9 +220,25 @@ def release_payment(operator_passphrase, escrow_id, network=None):
     if not worker:
         return None, "Could not determine worker address from escrow record"
 
-    # Verify hashes match
+    # Verify proof TX hash matches submitted hash — no full text needed
     submitted_hash = escrow_data.get("submitted_hash", "")
-    task_hash = escrow_data.get("task_hash", "")
+    proof_tx_id = escrow_data.get("proof_tx", "")
+
+    if submitted_hash and proof_tx_id:
+        print(f"  Verifying proof hash on-chain...")
+        proof_tx = api.get("getTransaction", transaction=proof_tx_id)
+        if ok(proof_tx):
+            proof_msg = proof_tx.get("attachment", {}).get("message", "")
+            # SIGPROOF:v1:<content_hash>:<sources_hash>
+            parts = proof_msg.split(":")
+            onchain_hash = parts[2] if len(parts) > 2 else ""
+            if onchain_hash and submitted_hash not in onchain_hash and onchain_hash not in submitted_hash:
+                return None, (f"Hash mismatch — submitted: {submitted_hash[:16]}... "
+                              f"on-chain proof: {onchain_hash[:16]}... "
+                              f"Worker's proof TX does not match their submission.")
+            print(f"  Hash verified ✓")
+        else:
+            print(f"  Warning: could not fetch proof TX {proof_tx_id} — skipping hash check")
 
     print(f"  Releasing {amount} SIGNA to {worker}...")
 
@@ -386,6 +402,7 @@ def _parse_escrow_from_txs(escrow_id, transactions):
                 escrow.update({
                     "state": STATE_SUBMITTED,
                     "submitted_hash": parts[2],
+                    "proof_tx": parts[3] if len(parts) > 3 else "",
                     "submit_tx": tx.get("transaction"),
                     "submitted_at": ts(tx.get("timestamp")),
                     "submitted_by": tx.get("senderRS"),
