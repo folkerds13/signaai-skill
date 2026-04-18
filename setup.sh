@@ -198,7 +198,7 @@ else:
         "agentId": "main",
         "sessionKey": "agent:main:main",
         "name": JOB_NAME,
-        "enabled": True,
+        "enabled": False,
         "createdAtMs": now_ms,
         "updatedAtMs": now_ms,
         "schedule": {
