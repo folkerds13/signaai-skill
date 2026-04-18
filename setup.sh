@@ -93,5 +93,11 @@ print("exec-approvals.json updated.")
 PYEOF
 
 echo ""
+# Replace ~ with actual home directory in SKILL.md so exec paths resolve correctly
+sed -i '' "s|~/.openclaw|$HOME/.openclaw|g" "$SKILL_DIR/SKILL.md" 2>/dev/null || \
+  sed -i "s|~/.openclaw|$HOME/.openclaw|g" "$SKILL_DIR/SKILL.md"
+echo "SKILL.md paths resolved to: $HOME/.openclaw"
+
+echo ""
 echo "Done. Restart OpenClaw to apply:"
 echo "  openclaw gateway restart"
