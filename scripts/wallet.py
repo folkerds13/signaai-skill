@@ -11,7 +11,7 @@ Usage:
 import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, signa, nqt, ts, fmt_address, FEE_STANDARD, FEE_MESSAGE, ok
+from signum_api import get_api, signa, nqt, ts, fmt_address, FEE_STANDARD, FEE_MESSAGE, FEE_AT, ok
 
 
 def get_account(address, network=None):
@@ -38,7 +38,11 @@ def send_signa(passphrase, recipient, amount_signa, message=None,
     Returns transaction ID on success.
     """
     api = get_api(network)
-    fee = FEE_MESSAGE if message else FEE_STANDARD
+
+    # Check if recipient is an AT (smart contract) — requires higher minimum fee
+    acct = api.get("getAccount", account=recipient)
+    is_at = acct.get("isAT", False)
+    fee = FEE_MESSAGE if message else (FEE_AT if is_at else FEE_STANDARD)
 
     params = {
         "secretPhrase": passphrase,
