@@ -93,18 +93,78 @@ def save_pending(tasks):
 
 # ── Telegram trigger ──────────────────────────────────────────────────────────
 
-def load_telegram_config():
-    """Read bot token and chat ID from OpenClaw config."""
+def load_openclaw_config():
+    """Read Telegram and hooks config from OpenClaw config."""
     try:
         with open(OPENCLAW_CFG) as f:
             cfg = json.load(f)
         tg = cfg.get("channels", {}).get("telegram", {})
-        token = tg.get("botToken", "")
+        tg_token = tg.get("botToken", "") or None
         approvers = tg.get("execApprovals", {}).get("approvers", [])
-        chat_id = approvers[0] if approvers else None
-        return token or None, chat_id
+        tg_chat_id = approvers[0] if approvers else None
+
+        hooks = cfg.get("hooks", {})
+        hook_enabled = hooks.get("enabled", False)
+        hook_token = hooks.get("token", "") if hook_enabled else None
+        hook_path = hooks.get("path", "/hooks")
+        gw_port = cfg.get("gateway", {}).get("port", 18789)
+
+        return tg_token, tg_chat_id, hook_token, hook_path, gw_port
     except Exception:
-        return None, None
+        return None, None, None, "/hooks", 18789
+
+# Keep backward-compatible alias
+def load_telegram_config():
+    tg_token, tg_chat_id, _, _, _ = load_openclaw_config()
+    return tg_token, tg_chat_id
+
+def trigger_agent(hook_token, hook_path, gw_port, escrow_id, sender, worker_address, task_hash):
+    """
+    POST to OpenClaw /hooks/agent to wake the worker agent for a new task.
+    This starts an isolated agent turn — no human needed.
+    """
+    if not hook_token:
+        return
+    try:
+        skill_dir = os.path.expanduser("~/.openclaw/workspace/skills/signaai/scripts")
+        message = (
+            f"New SignaAI task assigned to you.\n\n"
+            f"Escrow ID: {escrow_id}\n"
+            f"Payer: {sender}\n"
+            f"Your wallet: {worker_address}\n\n"
+            f"Run these steps IN ORDER. Use ONLY the --network mainnet flag format. "
+            f"NEVER use SIGNUM_NETWORK= prefix. NEVER output placeholder values — "
+            f"if a script fails, show the actual error.\n\n"
+            f"1. Get escrow details:\n"
+            f"   python3 {skill_dir}/escrow.py --network mainnet status {escrow_id} --address {worker_address}\n\n"
+            f"2. Research the task described in the escrow (task_hash: {task_hash[:16]}...).\n\n"
+            f"3. Stamp your result on-chain:\n"
+            f"   python3 {skill_dir}/verify.py --network mainnet stamp \"<your passphrase>\" \"<result text>\"\n\n"
+            f"4. Wait 4 minutes for the stamp TX to confirm, then self-verify:\n"
+            f"   python3 {skill_dir}/verify.py --network mainnet verify \"<result text>\" <stamp_tx_id>\n\n"
+            f"5. Submit to escrow:\n"
+            f"   python3 {skill_dir}/escrow.py --network mainnet submit \"<your passphrase>\" {escrow_id} \"<result text>\"\n\n"
+            f"Show me the actual TX IDs from each script output."
+        )
+        url = f"http://127.0.0.1:{gw_port}{hook_path}/agent"
+        data = json.dumps({
+            "message": message,
+            "name": "SignaAI Worker",
+            "agentId": "main",
+            "timeoutSeconds": 900,
+        }).encode()
+        req = urllib.request.Request(
+            url, data=data,
+            headers={
+                "Authorization": f"Bearer {hook_token}",
+                "Content-Type": "application/json",
+            }
+        )
+        urllib.request.urlopen(req, timeout=10)
+        log(f"Agent triggered via hooks API for escrow {escrow_id}")
+    except Exception as e:
+        log(f"Hooks trigger failed: {e}")
+
 
 def send_telegram(token, chat_id, message):
     """Send a message via Telegram Bot API to wake the OpenClaw agent."""
@@ -124,7 +184,8 @@ def send_telegram(token, chat_id, message):
 
 # ── Task processing ───────────────────────────────────────────────────────────
 
-def handle_transaction(tx, address, state, tg_token, tg_chat_id):
+def handle_transaction(tx, address, state, tg_token, tg_chat_id,
+                       hook_token=None, hook_path="/hooks", gw_port=18789):
     """
     Check if a transaction is an ESCROW:CREATE destined for our address.
     Returns True if a new task was recorded.
@@ -152,6 +213,7 @@ def handle_transaction(tx, address, state, tg_token, tg_chat_id):
     # Format: ESCROW:ASSIGN:<escrow_id>:<task_hash>
     parts = msg[len(ESCROW_PREFIX):].split(":")
     escrow_id = parts[0] if parts else "unknown"
+    task_hash = parts[1] if len(parts) > 1 else ""
     sender = tx.get("senderRS", tx.get("sender", "unknown"))
 
     task = {
@@ -175,19 +237,23 @@ def handle_transaction(tx, address, state, tg_token, tg_chat_id):
         f"Escrow: `{escrow_id}`\n"
         f"From: `{sender}`\n"
         f"TX: `{tx_id}`\n\n"
-        f"Process it using the SignaAI skill."
+        f"Processing automatically..."
     ))
+
+    trigger_agent(hook_token, hook_path, gw_port, escrow_id, sender, address, task_hash)
     return True
 
 
-def fetch_and_check(tx_id, address, network, state, tg_token, tg_chat_id):
+def fetch_and_check(tx_id, address, network, state, tg_token, tg_chat_id,
+                    hook_token=None, hook_path="/hooks", gw_port=18789):
     """Fetch a full transaction by ID then run handle_transaction on it."""
     api = get_api(network)
     result = api.get("getTransaction", transaction=str(tx_id))
     if not ok(result):
         log(f"Could not fetch TX {tx_id}: {result.get('error', 'unknown error')}")
         return False
-    return handle_transaction(result, address, state, tg_token, tg_chat_id)
+    return handle_transaction(result, address, state, tg_token, tg_chat_id,
+                              hook_token, hook_path, gw_port)
 
 
 # ── Minimal WebSocket client (stdlib only, no dependencies) ───────────────────
@@ -253,7 +319,8 @@ def ws_connect(host, port, path):
 
 # ── WebSocket event loop ──────────────────────────────────────────────────────
 
-def run_websocket(address, network, state, tg_token, tg_chat_id):
+def run_websocket(address, network, state, tg_token, tg_chat_id,
+                  hook_token=None, hook_path="/hooks", gw_port=18789):
     """
     Connect to local node WebSocket and process events.
     Returns True  → reconnect (transient error).
@@ -318,7 +385,8 @@ def run_websocket(address, network, state, tg_token, tg_chat_id):
                     continue
                 log(f"{len(tx_ids)} pending TX(s) — checking...")
                 found = sum(
-                    fetch_and_check(tid, address, network, state, tg_token, tg_chat_id)
+                    fetch_and_check(tid, address, network, state, tg_token, tg_chat_id,
+                                    hook_token, hook_path, gw_port)
                     for tid in tx_ids
                 )
                 save_state(state)
@@ -338,7 +406,8 @@ def run_websocket(address, network, state, tg_token, tg_chat_id):
 
 # ── Polling fallback ──────────────────────────────────────────────────────────
 
-def poll_once(address, network, state, tg_token, tg_chat_id):
+def poll_once(address, network, state, tg_token, tg_chat_id,
+              hook_token=None, hook_path="/hooks", gw_port=18789):
     api = get_api(network)
     result = api.get("getAccountTransactions",
                      account=address,
@@ -349,7 +418,8 @@ def poll_once(address, network, state, tg_token, tg_chat_id):
         return
 
     found = sum(
-        handle_transaction(tx, address, state, tg_token, tg_chat_id)
+        handle_transaction(tx, address, state, tg_token, tg_chat_id,
+                           hook_token, hook_path, gw_port)
         for tx in (result.get("transactions") or [])
     )
     save_state(state)
@@ -369,26 +439,29 @@ def main():
     parser.add_argument("--no-websocket",  action="store_true", help="Force polling mode")
     args = parser.parse_args()
 
-    tg_token, tg_chat_id = load_telegram_config()
+    tg_token, tg_chat_id, hook_token, hook_path, gw_port = load_openclaw_config()
 
     print(f"SignaAI Listener starting", flush=True)
     print(f"  Address:  {args.address}", flush=True)
     print(f"  Network:  {args.network}", flush=True)
     print(f"  Tasks:    {TRIGGER_FILE}", flush=True)
     print(f"  Telegram: {'enabled' if tg_token else 'disabled'}", flush=True)
+    print(f"  AutoTrigger: {'enabled' if hook_token else 'disabled'}", flush=True)
     print(flush=True)
 
     state = load_state()
 
     if args.once:
-        poll_once(args.address, args.network, state, tg_token, tg_chat_id)
+        poll_once(args.address, args.network, state, tg_token, tg_chat_id,
+                  hook_token, hook_path, gw_port)
         return
 
     if args.no_websocket:
         print(f"  Mode:     polling every {args.poll_interval}s", flush=True)
         while True:
             state = load_state()
-            poll_once(args.address, args.network, state, tg_token, tg_chat_id)
+            poll_once(args.address, args.network, state, tg_token, tg_chat_id,
+                      hook_token, hook_path, gw_port)
             time.sleep(args.poll_interval)
 
     # WebSocket mode with automatic polling fallback
@@ -402,7 +475,8 @@ def main():
         state = load_state()
 
         if ws_available:
-            should_reconnect = run_websocket(args.address, args.network, state, tg_token, tg_chat_id)
+            should_reconnect = run_websocket(args.address, args.network, state, tg_token, tg_chat_id,
+                                             hook_token, hook_path, gw_port)
             if should_reconnect:
                 log(f"Reconnecting in {reconnect_delay}s...")
                 time.sleep(reconnect_delay)
@@ -413,7 +487,8 @@ def main():
                 ws_available = False
 
         # Polling fallback
-        poll_once(args.address, args.network, state, tg_token, tg_chat_id)
+        poll_once(args.address, args.network, state, tg_token, tg_chat_id,
+                  hook_token, hook_path, gw_port)
         time.sleep(args.poll_interval)
 
         # Periodically check if node came back
