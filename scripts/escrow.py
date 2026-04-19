@@ -61,6 +61,9 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
 
     Returns escrow_id and full escrow record.
     """
+    if not payer_passphrase or not str(payer_passphrase).strip():
+        return None, "Payer passphrase cannot be empty"
+
     api = get_api(network)
 
     # Get payer address
@@ -80,7 +83,7 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     escrow_id = secrets.token_hex(8)  # 16 char hex, unique
 
     # Hash the task description — this is what the worker must reference
-    task_hash = hashlib.sha256(task_description.encode()).hexdigest()[:32]
+    task_hash = hashlib.sha256(task_description.encode()).hexdigest()
 
     amount_nqt = nqt(amount_signa)
 
@@ -100,18 +103,7 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         return None, f"Failed to record escrow: {record_result.get('error')}"
     record_tx = record_result.get("transaction")
 
-    # Step 2: Notify the worker directly so their listener can detect the task
-    print(f"  Notifying worker...")
-    time.sleep(2)
-    notify_message = f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}"
-    api.post("sendMessage",
-             secretPhrase=payer_passphrase,
-             recipient=worker_address,
-             message=notify_message,
-             messageIsText="true",
-             feeNQT=FEE_MESSAGE)
-
-    # Step 3: Transfer funds to escrow operator (using same wallet for prototype)
+    # Step 2: Transfer funds to escrow operator FIRST — fund before notifying worker
     # In production: this sends to the AT contract address
     print(f"  Transferring {amount_signa} SIGNA to escrow...")
     time.sleep(2)  # brief pause between transactions
@@ -121,6 +113,17 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
                               message=fund_message, network=network)
     if err:
         return None, f"Failed to fund escrow: {err}"
+
+    # Step 3: Notify the worker — only after funds are confirmed en route
+    print(f"  Notifying worker...")
+    time.sleep(2)
+    notify_message = f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}"
+    api.post("sendMessage",
+             secretPhrase=payer_passphrase,
+             recipient=worker_address,
+             message=notify_message,
+             messageIsText="true",
+             feeNQT=FEE_MESSAGE)
 
     escrow = {
         "escrow_id": escrow_id,
@@ -149,6 +152,9 @@ def submit_result(worker_passphrase, escrow_id, result_content,
     2. Publish hash to Signum (verifiable proof)
     3. Send submission message to escrow record
     """
+    if not worker_passphrase or not str(worker_passphrase).strip():
+        return None, "Worker passphrase cannot be empty"
+
     api = get_api(network)
 
     worker_address, err = get_my_address(worker_passphrase, network)
@@ -200,6 +206,9 @@ def release_payment(operator_passphrase, escrow_id, network=None):
 
     In AT version: this happens automatically when hash matches.
     """
+    if not operator_passphrase or not str(operator_passphrase).strip():
+        return None, "Operator passphrase cannot be empty"
+
     api = get_api(network)
 
     operator_address, err = get_my_address(operator_passphrase, network)
@@ -232,7 +241,7 @@ def release_payment(operator_passphrase, escrow_id, network=None):
             # SIGPROOF:v1:<content_hash>:<sources_hash>
             parts = proof_msg.split(":")
             onchain_hash = parts[2] if len(parts) > 2 else ""
-            if onchain_hash and submitted_hash not in onchain_hash and onchain_hash not in submitted_hash:
+            if onchain_hash and submitted_hash != onchain_hash:
                 return None, (f"Hash mismatch — submitted: {submitted_hash[:16]}... "
                               f"on-chain proof: {onchain_hash[:16]}... "
                               f"Worker's proof TX does not match their submission.")
@@ -323,7 +332,7 @@ def get_escrow_status(escrow_id, address=None, network=None):
     result = api.get("getAccountTransactions",
                      account=address,
                      firstIndex=0,
-                     lastIndex=199)
+                     lastIndex=999)
 
     txs = result.get("transactions", [])
     escrow, err = _parse_escrow_from_txs(escrow_id, txs)
@@ -335,7 +344,7 @@ def get_escrow_status(escrow_id, address=None, network=None):
         worker_result = api.get("getAccountTransactions",
                                 account=worker,
                                 firstIndex=0,
-                                lastIndex=199)
+                                lastIndex=999)
         worker_txs = worker_result.get("transactions", [])
         escrow2, _ = _parse_escrow_from_txs(escrow_id, worker_txs)
         # Merge — keep base data from first scan, take higher state from worker scan

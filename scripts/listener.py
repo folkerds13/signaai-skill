@@ -60,25 +60,35 @@ def log(msg):
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            return json.load(f)
+        try:
+            with open(STATE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {"processed_txs": []}
     return {"processed_txs": []}
 
 def save_state(state):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    with open(STATE_FILE, "w") as f:
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_FILE)
 
 def load_pending():
     if os.path.exists(TRIGGER_FILE):
-        with open(TRIGGER_FILE) as f:
-            return json.load(f)
+        try:
+            with open(TRIGGER_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return []
     return []
 
 def save_pending(tasks):
     os.makedirs(os.path.dirname(TRIGGER_FILE), exist_ok=True)
-    with open(TRIGGER_FILE, "w") as f:
+    tmp = TRIGGER_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(tasks, f, indent=2)
+    os.replace(tmp, TRIGGER_FILE)
 
 
 # ── Telegram trigger ──────────────────────────────────────────────────────────
@@ -175,6 +185,7 @@ def fetch_and_check(tx_id, address, network, state, tg_token, tg_chat_id):
     api = get_api(network)
     result = api.get("getTransaction", transaction=str(tx_id))
     if not ok(result):
+        log(f"Could not fetch TX {tx_id}: {result.get('error', 'unknown error')}")
         return False
     return handle_transaction(result, address, state, tg_token, tg_chat_id)
 

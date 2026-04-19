@@ -19,6 +19,7 @@ Usage:
 import sys
 import os
 import json
+import hashlib
 sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, signa, ts, fmt_address, FEE_ALIAS, FEE_MESSAGE, ok
 from wallet import get_my_address, get_transactions
@@ -47,7 +48,9 @@ def register_agent(passphrase, agent_name, capabilities=None, version="1.0",
     if err:
         return None, f"Could not derive address: {err}"
 
-    alias = f"{ALIAS_PREFIX}{agent_name.lower().replace(' ', '').replace('-', '').replace('_', '')}"
+    name_slug = agent_name.lower().replace(' ', '').replace('-', '').replace('_', '')
+    name_hash = hashlib.sha256(agent_name.encode()).hexdigest()[:8]
+    alias = f"{ALIAS_PREFIX}{name_slug}-{name_hash}"
 
     metadata = {
         "type": "ai-agent",
@@ -84,7 +87,9 @@ def lookup_agent(agent_name, network=None):
     Returns address and metadata if found.
     """
     api = get_api(network)
-    alias = f"{ALIAS_PREFIX}{agent_name.lower().replace(' ', '').replace('-', '').replace('_', '')}"
+    name_slug = agent_name.lower().replace(' ', '').replace('-', '').replace('_', '')
+    name_hash = hashlib.sha256(agent_name.encode()).hexdigest()[:8]
+    alias = f"{ALIAS_PREFIX}{name_slug}-{name_hash}"
 
     result = api.get("getAlias", aliasName=alias)
     if not ok(result):

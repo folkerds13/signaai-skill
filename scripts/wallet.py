@@ -11,7 +11,7 @@ Usage:
 import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, signa, nqt, ts, fmt_address, FEE_STANDARD, FEE_MESSAGE, FEE_AT, ok
+from signum_api import get_api, signa, nqt, ts, fmt_address, FEE_STANDARD, FEE_MESSAGE, FEE_AT, ok, EXPLORER_URL
 
 
 def get_account(address, network=None):
@@ -94,6 +94,8 @@ def get_transactions(address, limit=10, network=None):
 
 def get_my_address(passphrase, network=None):
     """Derive the address for a given passphrase (without sending anything)."""
+    if not passphrase or not str(passphrase).strip():
+        return None, "Passphrase cannot be empty"
     api = get_api(network)
     result = api.get("getAccountId", secretPhrase=passphrase)
     if not ok(result):
@@ -155,7 +157,7 @@ def main():
             print(f"Error: {err}")
         else:
             print(f"✓ Transaction broadcast: {tx_id}")
-            print(f"  View: https://explorer.signum.network/tx/{tx_id}")
+            print(f"  View: {EXPLORER_URL}/tx/{tx_id}")
 
     elif args.cmd == "history":
         txs, err = get_transactions(args.address, args.limit, args.network)

@@ -16,6 +16,8 @@ FEE_ALIAS     = 20_000_000  # 0.2 SIGNA — alias registration fee
 FEE_AT        = 1_000_000   # 0.01 SIGNA — minimum fee for AT (smart contract) transactions
 DEADLINE      = 1440       # minutes — max transaction validity window
 
+EXPLORER_URL = "https://explorer.signum.network"
+
 NODES = {
     "mainnet": [
         "https://europe.signum.network",

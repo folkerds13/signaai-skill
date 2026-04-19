@@ -25,7 +25,7 @@ import os
 import json
 import hashlib
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, ts, FEE_MESSAGE, ok
+from signum_api import get_api, ts, FEE_MESSAGE, ok, EXPLORER_URL
 from wallet import get_my_address
 
 
@@ -239,7 +239,7 @@ def main():
             print(f"  TX ID:   {result['tx_id']}")
             print(f"  Hash:    {result['content_hash']}")
             print(f"  Address: {result['address']}")
-            print(f"  View:    https://explorer.signum.network/tx/{result['tx_id']}")
+            print(f"  View:    {EXPLORER_URL}/tx/{result['tx_id']}")
 
     elif args.cmd == "stamp":
         sources = [s.strip() for s in args.sources.split(",") if s.strip()]
@@ -253,7 +253,7 @@ def main():
             print(f"✓ Proof stamped on-chain")
             print(f"  TX ID: {result['tx_id']}")
             print(f"  Give the recipient this TX ID to verify your output.")
-            print(f"  View:  https://explorer.signum.network/tx/{result['tx_id']}")
+            print(f"  View:  {EXPLORER_URL}/tx/{result['tx_id']}")
 
     elif args.cmd == "verify":
         sources = [s.strip() for s in args.sources.split(",") if s.strip()]
