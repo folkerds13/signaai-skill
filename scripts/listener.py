@@ -131,8 +131,10 @@ def load_openclaw_config():
     except Exception:
         return None, None, None, "/hooks", 18789
 
+OPENCLAW_MODELS = os.path.expanduser("~/.openclaw/agents/main/agent/models.json")
+
 ENV_VARS = {
-    # provider prefix → env var name
+    # provider prefix → env var name (fallback if models.json not present)
     "xai":       "XAI_API_KEY",
     "openai":    "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -142,8 +144,13 @@ ENV_VARS = {
 
 def load_openclaw_llm():
     """
-    Read the active LLM provider, model, base URL, and API key from openclaw.json.
-    Matches whatever provider the user already has configured in OpenClaw.
+    Read the active LLM provider, model, base URL, and API key from OpenClaw config.
+
+    Primary source: ~/.openclaw/agents/main/agent/models.json
+      — OpenClaw stores API keys here, readable by launchd daemons.
+
+    Fallback: env vars (XAI_API_KEY etc.) for interactive shells.
+
     Returns (provider, model, base_url, api_key) or None if can't determine.
     """
     try:
@@ -157,16 +164,28 @@ def load_openclaw_llm():
 
         provider, model_id = primary.split("/", 1)
 
-        # Get base URL from providers config
-        provider_cfg = cfg.get("models", {}).get("providers", {}).get(provider, {})
-        base_url = provider_cfg.get("baseUrl", "")
+        # Read baseUrl and apiKey from models.json (where OpenClaw stores them)
+        base_url = ""
+        api_key  = ""
+        try:
+            with open(OPENCLAW_MODELS) as f:
+                models_cfg = json.load(f)
+            prov = models_cfg.get("providers", {}).get(provider, {})
+            base_url = prov.get("baseUrl", "")
+            api_key  = prov.get("apiKey", "")
+        except Exception:
+            pass
 
-        # Get API key from env var
-        env_var = ENV_VARS.get(provider)
-        api_key = os.environ.get(env_var, "") if env_var else ""
+        # Fallback: env var (interactive shells)
+        if not api_key:
+            env_var = ENV_VARS.get(provider)
+            api_key = os.environ.get(env_var, "") if env_var else ""
+
+        if not base_url:
+            base_url, _ = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
 
         if not api_key and provider != "ollama":
-            return None  # provider configured but no key found
+            return None
 
         return provider, model_id, base_url, api_key
     except Exception:
@@ -175,9 +194,10 @@ def load_openclaw_llm():
 
 def load_worker_config():
     """
-    Load worker config from signaai-worker.json.
-    Provider/model/baseUrl come from openclaw.json.
-    API key: env var first, then apiKey field in signaai-worker.json (launchd-safe fallback).
+    Load worker passphrase from signaai-worker.json.
+    LLM provider/model/key are read from OpenClaw's models.json automatically —
+    the same place OpenClaw stores them, readable by launchd daemons.
+    Only passphrase is required in signaai-worker.json.
     Returns config dict or None if not configured.
     """
     if not os.path.exists(WORKER_CFG):
@@ -189,27 +209,12 @@ def load_worker_config():
         if not passphrase:
             return None
 
-        # Get provider/model/baseUrl from openclaw.json
-        try:
-            with open(OPENCLAW_CFG) as f:
-                oc = json.load(f)
-            primary = oc.get("agents", {}).get("defaults", {}).get("model", {}).get("primary", "")
-            if "/" not in primary:
-                return None
-            provider, model_id = primary.split("/", 1)
-            base_url = oc.get("models", {}).get("providers", {}).get(provider, {}).get("baseUrl", "")
-            if not base_url:
-                base_url, _ = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
-        except Exception:
+        llm = load_openclaw_llm()
+        if not llm:
+            log("Could not load LLM config from OpenClaw — is a provider configured?")
             return None
 
-        # API key: env var (interactive shell) → signaai-worker.json apiKey (launchd daemon)
-        env_var = ENV_VARS.get(provider)
-        api_key = (os.environ.get(env_var, "") if env_var else "") or str(cfg.get("apiKey", "")).strip()
-        if not api_key and provider != "ollama":
-            log(f"No API key for {provider} — set {env_var} env var or add apiKey to {WORKER_CFG}")
-            return None
-
+        provider, model_id, base_url, api_key = llm
         cfg["passphrase"] = passphrase
         cfg["provider"]   = provider
         cfg["model"]      = model_id
