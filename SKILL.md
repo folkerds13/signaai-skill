@@ -60,10 +60,10 @@ These phrases trigger the full workflow automatically — no need to spell out e
 
 | Say this | What happens |
 |----------|--------------|
-| `Run a SignaAI two-agent research demo on: <topic>` | Creates escrow, both agents research independently, both stamp on-chain, orchestrator verifies and releases payment |
+| `Create escrow for: <task>` | Checks memory/tasks.md, creates ONE escrow, outputs escrow ID, stops |
+| `Release escrow <escrow_id>` | Verifies worker proof on-chain and releases payment |
 | `Stamp this on-chain: <content>` | Stamps content with verify.py, waits 4 min, self-verifies, returns TX ID |
 | `Check escrow <escrow_id>` | Returns current escrow status and all on-chain events |
-| `Pay worker <amount> SIGNA for: <task>` | Creates escrow for worker agent S-44S7-32XB-5DM5-5AL3K |
 | `What's my balance` | Returns balance for the orchestrator wallet |
 
 ---
@@ -175,25 +175,56 @@ python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py
 
 ## Multi-Agent Demo Workflow
 
-This is the standard pattern for one OpenClaw to hire another:
+The demo is split into two separate prompts. Do NOT try to do both in one session.
 
+---
+
+### PAYER PROMPT (run on Machine 1)
+
+> Check memory/tasks.md. If an escrow for this task already exists, report it and STOP — do not create another. Otherwise create ONE escrow, output the escrow ID, and STOP. Do not wait for the worker. Do not check status. Do not release. Just create and stop.
+
+Steps:
 ```
-1. Orchestrator checks available agents  → identity.py list
-2. Orchestrator creates escrow for task  → escrow.py create
-3. Worker agent receives task (via on-chain message in escrow)
-4. Worker completes task, stamps output  → verify.py stamp
-   ⚠️ Stamp the FULL output text — not a placeholder. The orchestrator
-      verifies by hashing the same text; a placeholder will fail verification.
-5. Wait 4 minutes — Signum block time is ~4 minutes. The TX will not
-   be found on-chain until the next block confirms. Do not skip this wait.
-6. Worker verifies own stamp             → verify.py verify
-   If "Transaction not found" after 4 minutes → the stamp failed or was
-   never executed. STOP. Report the failure. Do not proceed.
-7. Worker submits result to escrow       → escrow.py submit
-8. Orchestrator verifies output          → verify.py verify
-   Pass the exact same text that was stamped in step 4.
-9. Orchestrator releases payment         → escrow.py release
+1. Read memory/tasks.md — if task already complete, stop immediately
+2. Check balance        → wallet.py balance
+3. Create ONE escrow    → escrow.py create
+4. Write to memory/tasks.md: escrow ID, TX IDs, task description
+5. Output the escrow ID and STOP
 ```
+
+⛔ **After step 5, do nothing else. Do not retry. Do not create a second escrow. The worker will be triggered automatically.**
+
+---
+
+### WORKER PROMPT (triggered automatically via hooks)
+
+Steps:
+```
+1. Get escrow details   → escrow.py status <escrow_id> --address <worker>
+2. Research the task
+3. Stamp result         → verify.py stamp
+4. Wait 4 minutes — block time is ~4 min. Do not skip.
+5. Self-verify stamp    → verify.py verify
+   If "not found" after 4 min → stamp failed. STOP and report.
+6. Submit to escrow     → escrow.py submit
+7. Output all TX IDs and STOP
+```
+
+---
+
+### RELEASE PROMPT (run on Machine 1 after worker submits)
+
+> Escrow <escrow_id> has been submitted by the worker. Verify the proof and release payment.
+
+Steps:
+```
+1. Check escrow status  → escrow.py status
+2. Verify worker proof  → verify.py verify
+3. Release payment      → escrow.py release
+4. Update memory/tasks.md as complete
+```
+
+---
 
 ⛔ **Hard rule: never report a TX ID you did not receive from actually running a script.**
 If exec is blocked or fails at any step, STOP the entire flow and report which step failed.
