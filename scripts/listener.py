@@ -134,6 +134,7 @@ def load_openclaw_config():
 def load_worker_config():
     """
     Load worker passphrase and optional API key from signaai-worker.json.
+    API key resolution order: config file → XAI_API_KEY → ANTHROPIC_API_KEY env vars.
     Returns config dict or None if not configured.
     """
     if not os.path.exists(WORKER_CFG):
@@ -144,10 +145,19 @@ def load_worker_config():
         passphrase = str(cfg.get("passphrase", "")).strip()
         if not passphrase:
             return None
-        # Resolve API key: config file → ANTHROPIC_API_KEY env var
-        api_key = cfg.get("apiKey", "").strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = (cfg.get("apiKey", "").strip()
+                   or os.environ.get("XAI_API_KEY", "")
+                   or os.environ.get("ANTHROPIC_API_KEY", ""))
         cfg["passphrase"] = passphrase
         cfg["apiKey"] = api_key
+        # Determine provider from key prefix or explicit config
+        provider = cfg.get("provider", "")
+        if not provider:
+            if os.environ.get("XAI_API_KEY") or cfg.get("apiKey", "").startswith("xai-"):
+                provider = "xai"
+            else:
+                provider = "anthropic"
+        cfg["provider"] = provider
         return cfg
     except Exception as e:
         log(f"Worker config error: {e}")
@@ -216,28 +226,46 @@ def trigger_agent(hook_token, hook_path, gw_port, escrow_id, sender,
 
 # ── Autonomous execution ──────────────────────────────────────────────────────
 
-def call_llm(task_description, api_key, model="claude-haiku-4-5-20251001"):
-    """Call Anthropic API to research a task. Returns result text."""
-    url = "https://api.anthropic.com/v1/messages"
-    data = json.dumps({
-        "model": model,
-        "max_tokens": 1500,
-        "messages": [{
-            "role": "user",
-            "content": (
-                "You are a research assistant. Complete this task thoroughly and accurately. "
-                "Cite any specific facts, figures, or sources you use.\n\n"
-                f"Task: {task_description}"
-            )
-        }]
-    }).encode()
-    req = urllib.request.Request(url, data=data, headers={
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    })
-    resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
-    return resp["content"][0]["text"]
+def call_llm(task_description, api_key, provider="xai"):
+    """
+    Call LLM to research a task. Returns result text.
+    provider="xai"       → xAI Grok via OpenAI-compatible API (default)
+    provider="anthropic" → Anthropic Claude Haiku
+    """
+    prompt = (
+        "You are a research assistant. Complete this task thoroughly and accurately. "
+        "Cite any specific facts, figures, or sources you use.\n\n"
+        f"Task: {task_description}"
+    )
+
+    if provider == "xai":
+        url = "https://api.x.ai/v1/chat/completions"
+        data = json.dumps({
+            "model": "grok-3-mini",
+            "max_tokens": 1500,
+            "messages": [{"role": "user", "content": prompt}]
+        }).encode()
+        req = urllib.request.Request(url, data=data, headers={
+            "Authorization": f"Bearer {api_key}",
+            "content-type": "application/json",
+        })
+        resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
+        return resp["choices"][0]["message"]["content"]
+    else:
+        # Anthropic fallback
+        url = "https://api.anthropic.com/v1/messages"
+        data = json.dumps({
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 1500,
+            "messages": [{"role": "user", "content": prompt}]
+        }).encode()
+        req = urllib.request.Request(url, data=data, headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        })
+        resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
+        return resp["content"][0]["text"]
 
 
 def wait_for_confirmation(tx_id, network):
@@ -282,8 +310,9 @@ def execute_task_autonomously(escrow_id, task_description, sender, worker_addres
         fail("No API key — set ANTHROPIC_API_KEY or add apiKey to signaai-worker.json")
         return
     try:
-        log(f"[{escrow_id}] Calling LLM for research...")
-        result = call_llm(task_description, api_key)
+        provider = worker_cfg.get("provider", "xai")
+        log(f"[{escrow_id}] Calling LLM ({provider}) for research...")
+        result = call_llm(task_description, api_key, provider)
         log(f"[{escrow_id}] Research complete ({len(result)} chars)")
     except Exception as e:
         fail(f"LLM call failed: {e}")
