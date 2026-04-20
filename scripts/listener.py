@@ -274,6 +274,7 @@ LLM_PROVIDERS = {
     "openai":    ("https://api.openai.com/v1",             "gpt-4o-mini"),
     "groq":      ("https://api.groq.com/openai/v1",        "llama-3.3-70b-versatile"),
     "anthropic": (None,                                    "claude-haiku-4-5-20251001"),  # separate handler
+    "ollama":    ("http://localhost:11434/v1",             "llama3.1:8b"),               # no key needed
 }
 
 def call_llm(task_description, api_key, provider="xai", model=None, base_url=None):
