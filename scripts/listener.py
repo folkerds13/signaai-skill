@@ -131,10 +131,53 @@ def load_openclaw_config():
     except Exception:
         return None, None, None, "/hooks", 18789
 
+ENV_VARS = {
+    # provider prefix → env var name
+    "xai":       "XAI_API_KEY",
+    "openai":    "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "groq":      "GROQ_API_KEY",
+    "ollama":    None,  # no key needed
+}
+
+def load_openclaw_llm():
+    """
+    Read the active LLM provider, model, base URL, and API key from openclaw.json.
+    Matches whatever provider the user already has configured in OpenClaw.
+    Returns (provider, model, base_url, api_key) or None if can't determine.
+    """
+    try:
+        with open(OPENCLAW_CFG) as f:
+            cfg = json.load(f)
+
+        # e.g. "xai/grok-4" or "groq/llama-3.3-70b-versatile"
+        primary = cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary", "")
+        if "/" not in primary:
+            return None
+
+        provider, model_id = primary.split("/", 1)
+
+        # Get base URL from providers config
+        provider_cfg = cfg.get("models", {}).get("providers", {}).get(provider, {})
+        base_url = provider_cfg.get("baseUrl", "")
+
+        # Get API key from env var
+        env_var = ENV_VARS.get(provider)
+        api_key = os.environ.get(env_var, "") if env_var else ""
+
+        if not api_key and provider != "ollama":
+            return None  # provider configured but no key found
+
+        return provider, model_id, base_url, api_key
+    except Exception:
+        return None
+
+
 def load_worker_config():
     """
-    Load worker passphrase and optional API key from signaai-worker.json.
-    API key resolution order: config file → XAI_API_KEY → ANTHROPIC_API_KEY env vars.
+    Load worker passphrase from signaai-worker.json.
+    LLM provider/model/key are read from openclaw.json automatically.
+    Only passphrase is required in signaai-worker.json.
     Returns config dict or None if not configured.
     """
     if not os.path.exists(WORKER_CFG):
@@ -145,36 +188,18 @@ def load_worker_config():
         passphrase = str(cfg.get("passphrase", "")).strip()
         if not passphrase:
             return None
-        # Resolve API key and provider — check config then env vars in priority order
-        explicit_key      = cfg.get("apiKey", "").strip()
-        explicit_provider = cfg.get("provider", "").strip()
 
-        env_map = [
-            ("XAI_API_KEY",       "xai"),
-            ("OPENAI_API_KEY",    "openai"),
-            ("ANTHROPIC_API_KEY", "anthropic"),
-            ("GROQ_API_KEY",      "groq"),
-        ]
+        # Load LLM config from OpenClaw — no separate API key needed
+        llm = load_openclaw_llm()
+        if not llm:
+            return None
 
-        if explicit_key and explicit_provider:
-            api_key  = explicit_key
-            provider = explicit_provider
-        elif explicit_key:
-            api_key  = explicit_key
-            provider = explicit_provider or "xai"
-        else:
-            api_key  = ""
-            provider = ""
-            for env_var, prov in env_map:
-                val = os.environ.get(env_var, "")
-                if val:
-                    api_key  = val
-                    provider = prov
-                    break
-
+        provider, model_id, base_url, api_key = llm
         cfg["passphrase"] = passphrase
+        cfg["provider"]   = provider
+        cfg["model"]      = model_id
+        cfg["baseUrl"]    = base_url
         cfg["apiKey"]     = api_key
-        cfg["provider"]   = provider or "xai"
         return cfg
     except Exception as e:
         log(f"Worker config error: {e}")
@@ -251,11 +276,14 @@ LLM_PROVIDERS = {
     "anthropic": (None,                                    "claude-haiku-4-5-20251001"),  # separate handler
 }
 
-def call_llm(task_description, api_key, provider="xai", model=None):
+def call_llm(task_description, api_key, provider="xai", model=None, base_url=None):
     """
     Call LLM to research a task. Returns result text.
 
-    Supported providers: xai, openai, groq, anthropic
+    provider/model/base_url are read from openclaw.json via load_openclaw_llm().
+    Falls back to LLM_PROVIDERS defaults if base_url not supplied.
+
+    Supported providers: xai, openai, groq, anthropic, ollama
     All except anthropic use the OpenAI-compatible /chat/completions endpoint.
     """
     prompt = (
@@ -280,17 +308,22 @@ def call_llm(task_description, api_key, provider="xai", model=None):
         return resp["content"][0]["text"]
 
     # All other providers: OpenAI-compatible
-    base_url, default_model = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
+    # Use base_url from openclaw.json if available, otherwise fall back to defaults
+    if not base_url:
+        base_url, _ = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
+    if not model:
+        _, model = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
+
     url = f"{base_url}/chat/completions"
+    headers = {"content-type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     data = json.dumps({
-        "model": model or default_model,
+        "model": model,
         "max_tokens": 1500,
         "messages": [{"role": "user", "content": prompt}]
     }).encode()
-    req = urllib.request.Request(url, data=data, headers={
-        "Authorization": f"Bearer {api_key}",
-        "content-type": "application/json",
-    })
+    req = urllib.request.Request(url, data=data, headers=headers)
     resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
     return resp["choices"][0]["message"]["content"]
 
@@ -323,6 +356,9 @@ def execute_task_autonomously(escrow_id, task_description, sender, worker_addres
 
     passphrase = worker_cfg["passphrase"]
     api_key    = worker_cfg["apiKey"]
+    provider   = worker_cfg.get("provider", "xai")
+    model      = worker_cfg.get("model")
+    base_url   = worker_cfg.get("baseUrl")
 
     log(f"[{escrow_id}] Autonomous execution starting")
     log(f"[{escrow_id}] Task: {task_description[:100]}...")
@@ -333,13 +369,13 @@ def execute_task_autonomously(escrow_id, task_description, sender, worker_addres
                       f"❌ *SignaAI Task Failed*\nEscrow: `{escrow_id}`\n{reason}")
 
     # Step 1: Research via LLM
-    if not api_key:
-        fail("No API key — set ANTHROPIC_API_KEY or add apiKey to signaai-worker.json")
+    if not api_key and provider != "ollama":
+        env_var = ENV_VARS.get(provider, "API key")
+        fail(f"No API key — set {env_var} environment variable")
         return
     try:
-        provider = worker_cfg.get("provider", "xai")
-        log(f"[{escrow_id}] Calling LLM ({provider}) for research...")
-        result = call_llm(task_description, api_key, provider)
+        log(f"[{escrow_id}] Calling LLM ({provider}/{model}) for research...")
+        result = call_llm(task_description, api_key, provider, model=model, base_url=base_url)
         log(f"[{escrow_id}] Research complete ({len(result)} chars)")
     except Exception as e:
         fail(f"LLM call failed: {e}")
@@ -694,8 +730,10 @@ def main():
     if worker_cfg:
         print(f"  Mode:        AUTONOMOUS (LLM + blockchain in daemon)", flush=True)
         provider = worker_cfg.get("provider", "?")
-        has_key  = bool(worker_cfg.get("apiKey"))
-        print(f"  LLM:         {provider} ({'ready' if has_key else 'NO API KEY — set XAI_API_KEY or similar'})", flush=True)
+        model    = worker_cfg.get("model", "?")
+        has_key  = bool(worker_cfg.get("apiKey")) or provider == "ollama"
+        env_hint = ENV_VARS.get(provider, "API key")
+        print(f"  LLM:         {provider}/{model} ({'ready' if has_key else f'NO API KEY — set {env_hint}'})", flush=True)
     else:
         print(f"  Mode:        agent trigger (configure {WORKER_CFG} for autonomous)", flush=True)
     print(flush=True)
