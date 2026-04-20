@@ -179,8 +179,9 @@ if [ ! -f "$WORKER_CFG" ]; then
 EOF
   chmod 600 "$WORKER_CFG"
   echo "Worker config created: $WORKER_CFG"
-  echo "  → Fill in your passphrase and Anthropic API key for autonomous mode."
-  echo "  → Leave apiKey blank to use ANTHROPIC_API_KEY environment variable."
+  echo "  → Fill in your passphrase for autonomous mode."
+  echo "  → apiKey: leave blank if your provider's env var is set in your shell."
+  echo "  → apiKey: set it here if running as a launchd daemon (env vars not inherited)."
 else
   echo "Worker config already exists: $WORKER_CFG"
 fi

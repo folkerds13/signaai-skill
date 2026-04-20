@@ -175,9 +175,9 @@ def load_openclaw_llm():
 
 def load_worker_config():
     """
-    Load worker passphrase from signaai-worker.json.
-    LLM provider/model/key are read from openclaw.json automatically.
-    Only passphrase is required in signaai-worker.json.
+    Load worker config from signaai-worker.json.
+    Provider/model/baseUrl come from openclaw.json.
+    API key: env var first, then apiKey field in signaai-worker.json (launchd-safe fallback).
     Returns config dict or None if not configured.
     """
     if not os.path.exists(WORKER_CFG):
@@ -189,12 +189,27 @@ def load_worker_config():
         if not passphrase:
             return None
 
-        # Load LLM config from OpenClaw — no separate API key needed
-        llm = load_openclaw_llm()
-        if not llm:
+        # Get provider/model/baseUrl from openclaw.json
+        try:
+            with open(OPENCLAW_CFG) as f:
+                oc = json.load(f)
+            primary = oc.get("agents", {}).get("defaults", {}).get("model", {}).get("primary", "")
+            if "/" not in primary:
+                return None
+            provider, model_id = primary.split("/", 1)
+            base_url = oc.get("models", {}).get("providers", {}).get(provider, {}).get("baseUrl", "")
+            if not base_url:
+                base_url, _ = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
+        except Exception:
             return None
 
-        provider, model_id, base_url, api_key = llm
+        # API key: env var (interactive shell) → signaai-worker.json apiKey (launchd daemon)
+        env_var = ENV_VARS.get(provider)
+        api_key = (os.environ.get(env_var, "") if env_var else "") or str(cfg.get("apiKey", "")).strip()
+        if not api_key and provider != "ollama":
+            log(f"No API key for {provider} — set {env_var} env var or add apiKey to {WORKER_CFG}")
+            return None
+
         cfg["passphrase"] = passphrase
         cfg["provider"]   = provider
         cfg["model"]      = model_id
