@@ -145,19 +145,36 @@ def load_worker_config():
         passphrase = str(cfg.get("passphrase", "")).strip()
         if not passphrase:
             return None
-        api_key = (cfg.get("apiKey", "").strip()
-                   or os.environ.get("XAI_API_KEY", "")
-                   or os.environ.get("ANTHROPIC_API_KEY", ""))
+        # Resolve API key and provider — check config then env vars in priority order
+        explicit_key      = cfg.get("apiKey", "").strip()
+        explicit_provider = cfg.get("provider", "").strip()
+
+        env_map = [
+            ("XAI_API_KEY",       "xai"),
+            ("OPENAI_API_KEY",    "openai"),
+            ("ANTHROPIC_API_KEY", "anthropic"),
+            ("GROQ_API_KEY",      "groq"),
+        ]
+
+        if explicit_key and explicit_provider:
+            api_key  = explicit_key
+            provider = explicit_provider
+        elif explicit_key:
+            api_key  = explicit_key
+            provider = explicit_provider or "xai"
+        else:
+            api_key  = ""
+            provider = ""
+            for env_var, prov in env_map:
+                val = os.environ.get(env_var, "")
+                if val:
+                    api_key  = val
+                    provider = prov
+                    break
+
         cfg["passphrase"] = passphrase
-        cfg["apiKey"] = api_key
-        # Determine provider from key prefix or explicit config
-        provider = cfg.get("provider", "")
-        if not provider:
-            if os.environ.get("XAI_API_KEY") or cfg.get("apiKey", "").startswith("xai-"):
-                provider = "xai"
-            else:
-                provider = "anthropic"
-        cfg["provider"] = provider
+        cfg["apiKey"]     = api_key
+        cfg["provider"]   = provider or "xai"
         return cfg
     except Exception as e:
         log(f"Worker config error: {e}")
@@ -226,11 +243,20 @@ def trigger_agent(hook_token, hook_path, gw_port, escrow_id, sender,
 
 # ── Autonomous execution ──────────────────────────────────────────────────────
 
-def call_llm(task_description, api_key, provider="xai"):
+LLM_PROVIDERS = {
+    # provider  → (base_url, default_model)
+    "xai":       ("https://api.x.ai/v1",                  "grok-3-mini"),
+    "openai":    ("https://api.openai.com/v1",             "gpt-4o-mini"),
+    "groq":      ("https://api.groq.com/openai/v1",        "llama-3.3-70b-versatile"),
+    "anthropic": (None,                                    "claude-haiku-4-5-20251001"),  # separate handler
+}
+
+def call_llm(task_description, api_key, provider="xai", model=None):
     """
     Call LLM to research a task. Returns result text.
-    provider="xai"       → xAI Grok via OpenAI-compatible API (default)
-    provider="anthropic" → Anthropic Claude Haiku
+
+    Supported providers: xai, openai, groq, anthropic
+    All except anthropic use the OpenAI-compatible /chat/completions endpoint.
     """
     prompt = (
         "You are a research assistant. Complete this task thoroughly and accurately. "
@@ -238,24 +264,10 @@ def call_llm(task_description, api_key, provider="xai"):
         f"Task: {task_description}"
     )
 
-    if provider == "xai":
-        url = "https://api.x.ai/v1/chat/completions"
-        data = json.dumps({
-            "model": "grok-3-mini",
-            "max_tokens": 1500,
-            "messages": [{"role": "user", "content": prompt}]
-        }).encode()
-        req = urllib.request.Request(url, data=data, headers={
-            "Authorization": f"Bearer {api_key}",
-            "content-type": "application/json",
-        })
-        resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
-        return resp["choices"][0]["message"]["content"]
-    else:
-        # Anthropic fallback
+    if provider == "anthropic":
         url = "https://api.anthropic.com/v1/messages"
         data = json.dumps({
-            "model": "claude-haiku-4-5-20251001",
+            "model": model or "claude-haiku-4-5-20251001",
             "max_tokens": 1500,
             "messages": [{"role": "user", "content": prompt}]
         }).encode()
@@ -266,6 +278,21 @@ def call_llm(task_description, api_key, provider="xai"):
         })
         resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
         return resp["content"][0]["text"]
+
+    # All other providers: OpenAI-compatible
+    base_url, default_model = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
+    url = f"{base_url}/chat/completions"
+    data = json.dumps({
+        "model": model or default_model,
+        "max_tokens": 1500,
+        "messages": [{"role": "user", "content": prompt}]
+    }).encode()
+    req = urllib.request.Request(url, data=data, headers={
+        "Authorization": f"Bearer {api_key}",
+        "content-type": "application/json",
+    })
+    resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
+    return resp["choices"][0]["message"]["content"]
 
 
 def wait_for_confirmation(tx_id, network):
@@ -666,7 +693,9 @@ def main():
     print(f"  Telegram:    {'enabled' if tg_token else 'disabled'}", flush=True)
     if worker_cfg:
         print(f"  Mode:        AUTONOMOUS (LLM + blockchain in daemon)", flush=True)
-        print(f"  LLM API key: {'set' if worker_cfg.get('apiKey') else 'missing — set ANTHROPIC_API_KEY'}", flush=True)
+        provider = worker_cfg.get("provider", "?")
+        has_key  = bool(worker_cfg.get("apiKey"))
+        print(f"  LLM:         {provider} ({'ready' if has_key else 'NO API KEY — set XAI_API_KEY or similar'})", flush=True)
     else:
         print(f"  Mode:        agent trigger (configure {WORKER_CFG} for autonomous)", flush=True)
     print(flush=True)
