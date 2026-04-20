@@ -167,6 +167,24 @@ PLIST
   fi
 fi
 
+# ── 4. Worker config (autonomous daemon) ─────────────────────────────────────
+WORKER_CFG="$HOME/.openclaw/signaai-worker.json"
+echo ""
+if [ ! -f "$WORKER_CFG" ]; then
+  cat > "$WORKER_CFG" <<EOF
+{
+  "passphrase": "",
+  "apiKey": ""
+}
+EOF
+  chmod 600 "$WORKER_CFG"
+  echo "Worker config created: $WORKER_CFG"
+  echo "  → Fill in your passphrase and Anthropic API key for autonomous mode."
+  echo "  → Leave apiKey blank to use ANTHROPIC_API_KEY environment variable."
+else
+  echo "Worker config already exists: $WORKER_CFG"
+fi
+
 echo ""
 echo "Done. Restart OpenClaw to apply:"
 echo "  openclaw gateway restart"

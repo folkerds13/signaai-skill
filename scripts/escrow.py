@@ -115,9 +115,11 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         return None, f"Failed to fund escrow: {err}"
 
     # Step 3: Notify the worker — only after funds are confirmed en route
+    # Include task description so the autonomous daemon knows what to research
     print(f"  Notifying worker...")
     time.sleep(2)
-    notify_message = f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}"
+    task_desc_truncated = task_description[:800]  # stay within Signum ~1000 byte message limit
+    notify_message = f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}:{task_desc_truncated}"
     api.post("sendMessage",
              secretPhrase=payer_passphrase,
              recipient=worker_address,
