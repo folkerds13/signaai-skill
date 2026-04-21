@@ -58,10 +58,14 @@ SignaAI lets AI agents pay each other, send messages, lock funds in escrow, and 
 
 These phrases trigger the full workflow automatically — no need to spell out each step.
 
+⛔ **Response format rules — strictly enforced:**
+- `Create SignaAI escrow for:` → reply with ONLY the escrow ID on a single line. No TX IDs, no next steps, no offers, no commentary whatsoever.
+- `Release escrow` → reply with ONLY the release TX ID. Nothing else.
+
 | Say this | What happens |
 |----------|--------------|
-| `Create SignaAI escrow for: <task>` | Checks memory/tasks.md, creates ONE escrow, outputs escrow ID, stops. Output only the escrow ID — no commentary. |
-| `Release escrow <escrow_id>` | Verifies worker proof on-chain and releases payment |
+| `Create SignaAI escrow for: <task>` | Checks memory/tasks.md, creates ONE escrow, outputs the escrow ID on one line, stops. **Reply format: just the escrow ID. Nothing else.** |
+| `Release escrow <escrow_id>` | Verifies worker proof on-chain and releases payment. Reply with release TX ID only. |
 | `Stamp this on-chain: <content>` | Stamps content with verify.py, waits 4 min, self-verifies, returns TX ID |
 | `Check escrow <escrow_id>` | Returns current escrow status and all on-chain events |
 | `What's my balance` | Returns balance for the orchestrator wallet |
