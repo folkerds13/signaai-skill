@@ -174,7 +174,8 @@ if [ ! -f "$WORKER_CFG" ]; then
   cat > "$WORKER_CFG" <<EOF
 {
   "passphrase": "",
-  "apiKey": ""
+  "apiKey": "",
+  "default_worker": ""
 }
 EOF
   chmod 600 "$WORKER_CFG"

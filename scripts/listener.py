@@ -51,9 +51,10 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, ts, ok
 
-ESCROW_PREFIX = "ESCROW:ASSIGN:"
-STATE_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
-TRIGGER_FILE  = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
+ESCROW_PREFIX    = "ESCROW:ASSIGN:"
+STATE_FILE       = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
+TRIGGER_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
+PAYER_QUEUE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-payer-queue.json")
 
 # Single-worker task queue — processes one escrow at a time, no parallel races
 _task_queue = queue.Queue()
@@ -125,6 +126,22 @@ def save_pending(tasks):
     with open(tmp, "w") as f:
         json.dump(tasks, f, indent=2)
     os.replace(tmp, TRIGGER_FILE)
+
+def load_payer_queue():
+    if os.path.exists(PAYER_QUEUE_FILE):
+        try:
+            with open(PAYER_QUEUE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+def save_payer_queue(items):
+    os.makedirs(os.path.dirname(PAYER_QUEUE_FILE), exist_ok=True)
+    tmp = PAYER_QUEUE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(items, f, indent=2)
+    os.replace(tmp, PAYER_QUEUE_FILE)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -233,11 +250,12 @@ def load_worker_config():
             return None
 
         provider, model_id, base_url, api_key = llm
-        cfg["passphrase"] = passphrase
-        cfg["provider"]   = provider
-        cfg["model"]      = model_id
-        cfg["baseUrl"]    = base_url
-        cfg["apiKey"]     = api_key
+        cfg["passphrase"]     = passphrase
+        cfg["provider"]       = provider
+        cfg["model"]          = model_id
+        cfg["baseUrl"]        = base_url
+        cfg["apiKey"]         = api_key
+        cfg["default_worker"] = str(cfg.get("default_worker", "")).strip()
         return cfg
     except Exception as e:
         log(f"Worker config error: {e}")
@@ -491,6 +509,67 @@ def execute_task_autonomously(escrow_id, task_description, sender, worker_addres
     save_pending(pending)
 
     log(f"[{escrow_id}] Complete ✓  stamp={stamp_tx}  submit={submit_tx}")
+
+
+# ── Payer queue processor ─────────────────────────────────────────────────────
+
+def process_payer_queue(address, network, worker_cfg, tg_token, tg_chat_id):
+    """
+    Check the payer queue file for pending escrow creation requests.
+    Called periodically from the main loop — no LLM involvement.
+    The LLM writes tasks here; Python creates the escrow deterministically.
+    """
+    if not worker_cfg:
+        return
+
+    items = load_payer_queue()
+    pending = [i for i in items if i.get("status") == "pending"]
+    if not pending:
+        return
+
+    sys.path.insert(0, os.path.dirname(__file__))
+    from escrow import create_escrow
+
+    passphrase    = worker_cfg["passphrase"]
+    default_worker = worker_cfg.get("default_worker", "")
+
+    for item in pending:
+        task        = item.get("task", "").strip()
+        worker_addr = item.get("worker_address", default_worker).strip()
+        amount      = float(item.get("amount", 1.0))
+        item_id     = item.get("id", "")
+
+        if not task or not worker_addr:
+            item["status"] = "error"
+            item["error"]  = "Missing task or worker_address"
+            continue
+
+        log(f"Payer queue: creating escrow for '{task[:60]}...'")
+        escrow, err = create_escrow(passphrase, worker_addr, amount, task,
+                                     deadline_hours=24, network=network)
+        if err:
+            log(f"Payer queue: escrow creation failed — {err}")
+            item["status"] = "error"
+            item["error"]  = err
+            send_telegram(tg_token, tg_chat_id,
+                          f"❌ *Escrow creation failed*\n{err}")
+            continue
+
+        if escrow.get("duplicate"):
+            escrow_id = escrow["escrow_id"]
+            log(f"Payer queue: duplicate — existing escrow {escrow_id}")
+            item["status"]    = "duplicate"
+            item["escrow_id"] = escrow_id
+        else:
+            escrow_id = escrow["escrow_id"]
+            log(f"Payer queue: escrow created — {escrow_id}")
+            item["status"]    = "created"
+            item["escrow_id"] = escrow_id
+
+        send_telegram(tg_token, tg_chat_id,
+                      f"✅ *Escrow Created*\nID: `{escrow_id}`\nTask: {task[:100]}")
+
+    save_payer_queue(items)
 
 
 # ── Transaction handler ───────────────────────────────────────────────────────
@@ -747,6 +826,9 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
 def poll_once(address, network, state, tg_token, tg_chat_id,
               hook_token=None, hook_path="/hooks", gw_port=18789,
               worker_cfg=None):
+    # Check payer queue first — create any pending escrows
+    process_payer_queue(address, network, worker_cfg, tg_token, tg_chat_id)
+
     api = get_api(network)
     result = api.get("getAccountTransactions",
                      account=address,
