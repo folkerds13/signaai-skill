@@ -38,6 +38,7 @@ import argparse
 import base64
 import json
 import os
+import queue
 import socket
 import struct
 import sys
@@ -53,6 +54,23 @@ from signum_api import get_api, ts, ok
 ESCROW_PREFIX = "ESCROW:ASSIGN:"
 STATE_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
 TRIGGER_FILE  = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
+
+# Single-worker task queue — processes one escrow at a time, no parallel races
+_task_queue = queue.Queue()
+
+def _task_worker():
+    """Background thread that drains the task queue one at a time."""
+    while True:
+        fn, args = _task_queue.get()
+        try:
+            fn(*args)
+        except Exception as e:
+            log(f"Task worker error: {e}")
+        finally:
+            _task_queue.task_done()
+
+_worker_thread = threading.Thread(target=_task_worker, daemon=True)
+_worker_thread.start()
 OPENCLAW_CFG  = os.path.expanduser("~/.openclaw/openclaw.json")
 WORKER_CFG    = os.path.expanduser("~/.openclaw/signaai-worker.json")
 
@@ -548,17 +566,17 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
     ))
 
     if worker_cfg and task_description:
-        # Fully autonomous: LLM research + all blockchain ops in background thread
+        # Queue task for sequential processing — one at a time, no parallel races
         # Use payer's Telegram (from ASSIGN message) for completion notification
         notify_token   = payer_tg_token or tg_token
         notify_chat_id = payer_tg_chat  or tg_chat_id
-        t = threading.Thread(
-            target=execute_task_autonomously,
-            args=(escrow_id, task_description, sender, address,
-                  network, worker_cfg, notify_token, notify_chat_id),
-            daemon=True
-        )
-        t.start()
+        queue_depth = _task_queue.qsize()
+        if queue_depth > 0:
+            log(f"Task queued (position {queue_depth + 1}) — escrow {escrow_id}")
+        _task_queue.put((execute_task_autonomously, (
+            escrow_id, task_description, sender, address,
+            network, worker_cfg, notify_token, notify_chat_id
+        )))
     else:
         # Fallback: trigger OpenClaw agent via hooks API
         if not task_description:
