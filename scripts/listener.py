@@ -502,12 +502,22 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
     if not msg.startswith(ESCROW_PREFIX):
         return False
 
-    # Format: ESCROW:ASSIGN:<escrow_id>:<task_hash>:<task_description>
+    # Format: ESCROW:ASSIGN:<escrow_id>:<task_hash>:<payer_tg_token>:<payer_tg_chat>:<task_description>
+    # Legacy format (no telegram fields): ESCROW:ASSIGN:<escrow_id>:<task_hash>:<task_description>
     raw = msg[len(ESCROW_PREFIX):]
-    parts = raw.split(":", 3)
+    parts = raw.split(":", 5)
     escrow_id        = parts[0] if len(parts) > 0 else "unknown"
     task_hash        = parts[1] if len(parts) > 1 else ""
-    task_description = parts[2] if len(parts) > 2 else ""
+    # Detect new format: part[2] looks like a Telegram bot token (contains ":")
+    # New format has 6 parts, legacy has 3
+    if len(parts) >= 6:
+        payer_tg_token   = parts[2]
+        payer_tg_chat    = parts[3]
+        task_description = parts[4] + (":" + parts[5] if parts[5] else "")
+    else:
+        payer_tg_token   = ""
+        payer_tg_chat    = ""
+        task_description = parts[2] if len(parts) > 2 else ""
     sender           = tx.get("senderRS", tx.get("sender", "unknown"))
 
     task = {
@@ -536,10 +546,13 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
 
     if worker_cfg and task_description:
         # Fully autonomous: LLM research + all blockchain ops in background thread
+        # Use payer's Telegram (from ASSIGN message) for completion notification
+        notify_token   = payer_tg_token or tg_token
+        notify_chat_id = payer_tg_chat  or tg_chat_id
         t = threading.Thread(
             target=execute_task_autonomously,
             args=(escrow_id, task_description, sender, address,
-                  network, worker_cfg, tg_token, tg_chat_id),
+                  network, worker_cfg, notify_token, notify_chat_id),
             daemon=True
         )
         t.start()

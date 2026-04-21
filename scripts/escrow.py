@@ -46,6 +46,23 @@ STATE_RELEASED  = "RELEASED"
 STATE_REFUNDED  = "REFUNDED"
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _read_telegram_config():
+    """Read payer's Telegram bot token and chat ID from openclaw.json."""
+    try:
+        cfg_path = os.path.expanduser("~/.openclaw/openclaw.json")
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        tg = cfg.get("channels", {}).get("telegram", {})
+        token = tg.get("botToken", "") or ""
+        approvers = tg.get("execApprovals", {}).get("approvers", [])
+        chat_id = str(approvers[0]) if approvers else ""
+        return token, chat_id
+    except Exception:
+        return "", ""
+
+
 # ── Core Functions ────────────────────────────────────────────────────────────
 
 def create_escrow(payer_passphrase, worker_address, amount_signa,
@@ -115,11 +132,13 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         return None, f"Failed to fund escrow: {err}"
 
     # Step 3: Notify the worker — only after funds are confirmed en route
-    # Include task description so the autonomous daemon knows what to research
+    # Include payer Telegram contact so daemon can notify payer on completion
     print(f"  Notifying worker...")
     time.sleep(2)
-    task_desc_truncated = task_description[:800]  # stay within Signum ~1000 byte message limit
-    notify_message = f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}:{task_desc_truncated}"
+    payer_tg_token, payer_tg_chat = _read_telegram_config()
+    task_desc_truncated = task_description[:700]  # leave room for telegram fields
+    notify_message = (f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}:"
+                      f"{payer_tg_token}:{payer_tg_chat}:{task_desc_truncated}")
     api.post("sendMessage",
              secretPhrase=payer_passphrase,
              recipient=worker_address,
