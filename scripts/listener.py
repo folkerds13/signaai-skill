@@ -795,6 +795,24 @@ def main():
 
     state = load_state()
 
+    # On startup: re-queue any tasks that were pending when the daemon last stopped
+    if worker_cfg:
+        pending = load_pending()
+        retries = [t for t in pending if t.get("status") == "pending"]
+        if retries:
+            log(f"Retrying {len(retries)} pending task(s) from previous session...")
+            for task in retries:
+                escrow_id = task.get("escrow_id", "")
+                task_desc = task.get("task_description", "")
+                sender    = task.get("sender", "")
+                if not escrow_id or not task_desc:
+                    continue
+                log(f"  Re-queuing escrow {escrow_id}")
+                _task_queue.put((execute_task_autonomously, (
+                    escrow_id, task_desc, sender, args.address,
+                    args.network, worker_cfg, tg_token, tg_chat_id
+                )))
+
     if args.once:
         poll_once(args.address, args.network, state, tg_token, tg_chat_id,
                   hook_token, hook_path, gw_port, worker_cfg)
