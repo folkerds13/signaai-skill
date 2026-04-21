@@ -36,8 +36,10 @@ from wallet import get_my_address, send_signa, get_transactions
 from verify import hash_content, publish_proof
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-ESCROW_PREFIX = "ESCROW:"
+ESCROW_PREFIX   = "ESCROW:"
 BLOCKS_PER_HOUR = 15  # ~4 min per block = 15 blocks/hour
+DEDUP_FILE      = os.path.expanduser("~/.openclaw/workspace/signaai-escrow-dedup.json")
+DEDUP_TTL       = 3600  # seconds — ignore duplicate requests within 1 hour
 
 # Escrow states
 STATE_CREATED   = "CREATED"
@@ -47,6 +49,43 @@ STATE_REFUNDED  = "REFUNDED"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _dedup_check(task_description):
+    """
+    Returns existing escrow_id if this task was already created within DEDUP_TTL.
+    Returns None if this is a new task — safe to proceed.
+    """
+    task_key = hashlib.sha256(task_description.strip().lower().encode()).hexdigest()[:16]
+    try:
+        if os.path.exists(DEDUP_FILE):
+            with open(DEDUP_FILE) as f:
+                dedup = json.load(f)
+            entry = dedup.get(task_key)
+            if entry and time.time() - entry["created_at"] < DEDUP_TTL:
+                return entry["escrow_id"]
+    except Exception:
+        pass
+    return None
+
+def _dedup_record(task_description, escrow_id):
+    """Record a newly created escrow to prevent duplicates."""
+    task_key = hashlib.sha256(task_description.strip().lower().encode()).hexdigest()[:16]
+    try:
+        dedup = {}
+        if os.path.exists(DEDUP_FILE):
+            with open(DEDUP_FILE) as f:
+                dedup = json.load(f)
+        # Prune old entries
+        now = time.time()
+        dedup = {k: v for k, v in dedup.items() if now - v["created_at"] < DEDUP_TTL}
+        dedup[task_key] = {"escrow_id": escrow_id, "created_at": now}
+        os.makedirs(os.path.dirname(DEDUP_FILE), exist_ok=True)
+        tmp = DEDUP_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(dedup, f, indent=2)
+        os.replace(tmp, DEDUP_FILE)
+    except Exception:
+        pass
 
 def _read_telegram_config():
     """Read payer's Telegram bot token and chat ID from openclaw.json."""
@@ -80,6 +119,12 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     """
     if not payer_passphrase or not str(payer_passphrase).strip():
         return None, "Payer passphrase cannot be empty"
+
+    # Hard dedup — refuse to create a second escrow for the same task within 1 hour
+    existing = _dedup_check(task_description)
+    if existing:
+        print(f"  Duplicate detected — escrow {existing} already created for this task.")
+        return {"escrow_id": existing, "duplicate": True}, None
 
     api = get_api(network)
 
@@ -162,6 +207,9 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         "fund_tx": fund_tx,
         "current_block": current_block,
     }
+
+    # Record in dedup file — prevents duplicate creation even if script is called again
+    _dedup_record(task_description, escrow_id)
 
     return escrow, None
 
