@@ -449,14 +449,16 @@ def execute_task_autonomously(escrow_id, task_description, sender, worker_addres
         fail(f"Submit failed: {e}")
         return
 
-    # Step 6: Notify payer
-    from signum_api import EXPLORER_URL
+    # Step 6: Notify payer with result + TX IDs
+    # Truncate result to fit Telegram's 4096 char limit (leave room for header)
+    result_preview = result[:3000] + "..." if len(result) > 3000 else result
     send_telegram(tg_token, tg_chat_id, (
         f"✅ *SignaAI Task Complete*\n"
-        f"Escrow: `{escrow_id}`\n"
+        f"Escrow: `{escrow_id}`\n\n"
+        f"*Research Result:*\n{result_preview}\n\n"
         f"Stamp TX: `{stamp_tx}`\n"
         f"Submit TX: `{submit_tx}`\n\n"
-        f"Payer: release payment with:\n"
+        f"Release payment:\n"
         f"`Release escrow {escrow_id}`"
     ))
 
