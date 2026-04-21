@@ -11,11 +11,11 @@ Every script call MUST use `--network mainnet` as a flag. NEVER use `SIGNUM_NETW
 
 ✅ CORRECT:
 ```
-python3 ~/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet balance <address>
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet balance <address>
 ```
 ❌ BLOCKED — do not use:
 ```
-SIGNUM_NETWORK=mainnet python3 ~/.openclaw/workspace/skills/signaai/scripts/wallet.py ...
+SIGNUM_NETWORK=mainnet python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py ...
 ```
 
 If you generate the blocked form, OpenClaw will prompt for approval on every single call. Always use `--network mainnet` flag.
@@ -64,7 +64,7 @@ These phrases trigger the full workflow automatically.
 
 | Say this | What you do |
 |----------|-------------|
-| `Create SignaAI escrow for: <task>` | Append one JSON entry to `~/.openclaw/workspace/signaai-payer-queue.json` then reply "Queued." Nothing else. |
+| `Create SignaAI escrow for: <task> worker: <address>` | Append one JSON entry to `/Users/mkfolkerds/.openclaw/workspace/signaai-payer-queue.json` (with `worker_address` set to the provided address) then reply "Queued." Nothing else. |
 | `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply with release TX ID only. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Check escrow <escrow_id>` | Run `escrow.py status` and return the result |
@@ -72,14 +72,14 @@ These phrases trigger the full workflow automatically.
 
 ### How to queue an escrow (the ONLY correct way)
 
-Append to `~/.openclaw/workspace/signaai-payer-queue.json`:
+Append to `/Users/mkfolkerds/.openclaw/workspace/signaai-payer-queue.json`:
 
 ```json
 [
   {
     "id": "<uuid>",
     "task": "<full task description>",
-    "worker_address": "",
+    "worker_address": "<S-XXXX-XXXX-XXXX-XXXXX>",
     "amount": 1.0,
     "status": "pending",
     "queued_at": "<ISO timestamp>"
@@ -87,7 +87,7 @@ Append to `~/.openclaw/workspace/signaai-payer-queue.json`:
 ]
 ```
 
-Leave `worker_address` blank to use the daemon's configured default. The daemon creates the escrow and notifies via Telegram. **Do not run escrow.py create. Do not output an escrow ID yourself.**
+`worker_address` is required — always use the address the user specifies. The daemon creates the escrow and notifies via Telegram. **Do not run escrow.py create. Do not output an escrow ID yourself.**
 
 ---
 

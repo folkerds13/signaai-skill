@@ -170,16 +170,14 @@ fi
 # ── 4. Worker config (autonomous daemon) ─────────────────────────────────────
 WORKER_CFG="$HOME/.openclaw/signaai-worker.json"
 PASSPHRASE=""
-DEFAULT_WORKER=""
 
 echo ""
 echo "Worker configuration"
 echo "--------------------"
 
-# Load existing values if file exists
+# Load existing passphrase if file exists
 if [ -f "$WORKER_CFG" ]; then
   PASSPHRASE=$(python3 -c "import json; d=json.load(open('$WORKER_CFG')); print(d.get('passphrase',''))" 2>/dev/null || echo "")
-  DEFAULT_WORKER=$(python3 -c "import json; d=json.load(open('$WORKER_CFG')); print(d.get('default_worker',''))" 2>/dev/null || echo "")
 fi
 
 # Prompt for passphrase if running interactively
@@ -193,17 +191,6 @@ if [ -t 0 ]; then
   fi
   read -r INPUT_PASSPHRASE
   [ -n "$INPUT_PASSPHRASE" ] && PASSPHRASE="$INPUT_PASSPHRASE"
-
-  echo ""
-  echo "Default worker address — the agent this machine sends tasks to by default."
-  echo "  (Leave blank to specify per-task)"
-  if [ -n "$DEFAULT_WORKER" ]; then
-    echo -n "Default worker address [${DEFAULT_WORKER}]: "
-  else
-    echo -n "Default worker address: "
-  fi
-  read -r INPUT_WORKER
-  [ -n "$INPUT_WORKER" ] && DEFAULT_WORKER="$INPUT_WORKER"
 fi
 
 # Write config
@@ -217,21 +204,18 @@ if os.path.exists(path):
             data = json.load(f)
     except Exception:
         data = {}
-data["passphrase"]     = "$PASSPHRASE"
-data["apiKey"]         = data.get("apiKey", "")
-data["default_worker"] = "$DEFAULT_WORKER"
+data["passphrase"] = "$PASSPHRASE"
+data["apiKey"]     = data.get("apiKey", "")
+# Remove legacy default_worker if present
+data.pop("default_worker", None)
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
 os.chmod(path, 0o600)
 print(f"Worker config saved: {path}")
 if data["passphrase"]:
-    print("  passphrase:     set")
+    print("  passphrase: set")
 else:
-    print("  passphrase:     NOT SET — autonomous mode disabled")
-if data["default_worker"]:
-    print(f"  default_worker: {data['default_worker']}")
-else:
-    print("  default_worker: not set (specify per task)")
+    print("  passphrase: NOT SET — autonomous mode disabled")
 PYEOF
 
 echo ""

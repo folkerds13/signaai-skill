@@ -255,7 +255,6 @@ def load_worker_config():
         cfg["model"]          = model_id
         cfg["baseUrl"]        = base_url
         cfg["apiKey"]         = api_key
-        cfg["default_worker"] = str(cfg.get("default_worker", "")).strip()
         return cfg
     except Exception as e:
         log(f"Worker config error: {e}")
@@ -530,12 +529,11 @@ def process_payer_queue(address, network, worker_cfg, tg_token, tg_chat_id):
     sys.path.insert(0, os.path.dirname(__file__))
     from escrow import create_escrow
 
-    passphrase    = worker_cfg["passphrase"]
-    default_worker = worker_cfg.get("default_worker", "")
+    passphrase = worker_cfg["passphrase"]
 
     for item in pending:
         task        = item.get("task", "").strip()
-        worker_addr = item.get("worker_address", default_worker).strip()
+        worker_addr = item.get("worker_address", "").strip()
         amount      = float(item.get("amount", 1.0))
         item_id     = item.get("id", "")
 
