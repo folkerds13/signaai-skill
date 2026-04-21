@@ -343,7 +343,7 @@ def call_llm(task_description, api_key, provider="xai", model=None, base_url=Non
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         })
-        resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
+        resp = json.loads(urllib.request.urlopen(req, timeout=120).read())
         return resp["content"][0]["text"]
 
     # All other providers: OpenAI-compatible
@@ -363,7 +363,7 @@ def call_llm(task_description, api_key, provider="xai", model=None, base_url=Non
         "messages": [{"role": "user", "content": prompt}]
     }).encode()
     req = urllib.request.Request(url, data=data, headers=headers)
-    resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
+    resp = json.loads(urllib.request.urlopen(req, timeout=120).read())
     return resp["choices"][0]["message"]["content"]
 
 
