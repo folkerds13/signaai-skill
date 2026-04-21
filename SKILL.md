@@ -60,7 +60,7 @@ These phrases trigger the full workflow automatically — no need to spell out e
 
 | Say this | What happens |
 |----------|--------------|
-| `Create escrow for: <task>` | Checks memory/tasks.md, creates ONE escrow, outputs escrow ID, stops |
+| `Create escrow for: <task>` | Checks memory/tasks.md, creates ONE escrow, outputs escrow ID, stops. Output only the escrow ID — no commentary. |
 | `Release escrow <escrow_id>` | Verifies worker proof on-chain and releases payment |
 | `Stamp this on-chain: <content>` | Stamps content with verify.py, waits 4 min, self-verifies, returns TX ID |
 | `Check escrow <escrow_id>` | Returns current escrow status and all on-chain events |
@@ -192,7 +192,7 @@ Steps:
 5. Output the escrow ID and STOP
 ```
 
-⛔ **After step 5, do nothing else. Do not retry. Do not create a second escrow. The worker will be triggered automatically.**
+⛔ **After step 5, output ONLY the escrow ID. No commentary, no next steps, no offers to continue. The worker daemon handles everything automatically.**
 
 ---
 
