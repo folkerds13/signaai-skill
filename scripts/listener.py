@@ -504,18 +504,19 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
     if not msg.startswith(ESCROW_PREFIX):
         return False
 
-    # Format: ESCROW:ASSIGN:<escrow_id>:<task_hash>:<payer_tg_token>:<payer_tg_chat>:<task_description>
+    # Format: ESCROW:ASSIGN:<escrow_id>:<task_hash>:<tg_token>~<tg_chat_id>:<task_description>
     # Legacy format (no telegram fields): ESCROW:ASSIGN:<escrow_id>:<task_hash>:<task_description>
     raw = msg[len(ESCROW_PREFIX):]
-    parts = raw.split(":", 5)
-    escrow_id        = parts[0] if len(parts) > 0 else "unknown"
-    task_hash        = parts[1] if len(parts) > 1 else ""
-    # Detect new format: part[2] looks like a Telegram bot token (contains ":")
-    # New format has 6 parts, legacy has 3
-    if len(parts) >= 6:
-        payer_tg_token   = parts[2]
-        payer_tg_chat    = parts[3]
-        task_description = parts[4] + (":" + parts[5] if parts[5] else "")
+    parts = raw.split(":", 3)  # max 4 parts — task description can contain colons
+    escrow_id = parts[0] if len(parts) > 0 else "unknown"
+    task_hash = parts[1] if len(parts) > 1 else ""
+    # New format: parts[2] is "token~chat_id", parts[3] is task description
+    # Legacy format: parts[2] is the task description
+    if len(parts) >= 4 and "~" in parts[2]:
+        tg_parts       = parts[2].split("~", 1)
+        payer_tg_token = tg_parts[0]
+        payer_tg_chat  = tg_parts[1]
+        task_description = parts[3]
     else:
         payer_tg_token   = ""
         payer_tg_chat    = ""
