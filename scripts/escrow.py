@@ -181,11 +181,12 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     print(f"  Notifying worker...")
     time.sleep(2)
     payer_tg_token, payer_tg_chat = _read_telegram_config()
-    task_desc_truncated = task_description[:700]  # leave room for telegram fields
-    # Use ~ to join token and chat_id — bot tokens contain colons so can't use : as separator
-    tg_contact = f"{payer_tg_token}~{payer_tg_chat}" if payer_tg_token else ""
+    task_desc_truncated = task_description[:750]
+    # Append Telegram contact as |TG: suffix — after task description, no colon conflicts
+    # Bot tokens contain colons so they can't be used as field separators
+    tg_suffix = f"|TG:{payer_tg_token}~{payer_tg_chat}" if payer_tg_token else ""
     notify_message = (f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}:"
-                      f"{tg_contact}:{task_desc_truncated}")
+                      f"{task_desc_truncated}{tg_suffix}")
     api.post("sendMessage",
              secretPhrase=payer_passphrase,
              recipient=worker_address,
