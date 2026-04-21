@@ -53,6 +53,7 @@ STATE_REFUNDED  = "REFUNDED"
 def _dedup_check(task_description):
     """
     Returns existing escrow_id if this task was already created within DEDUP_TTL.
+    Returns "pending" if creation is in progress (race condition guard).
     Returns None if this is a new task — safe to proceed.
     """
     task_key = hashlib.sha256(task_description.strip().lower().encode()).hexdigest()[:16]
@@ -62,7 +63,7 @@ def _dedup_check(task_description):
                 dedup = json.load(f)
             entry = dedup.get(task_key)
             if entry and time.time() - entry["created_at"] < DEDUP_TTL:
-                return entry["escrow_id"]
+                return entry["escrow_id"]  # may be "pending" or real ID
     except Exception:
         pass
     return None
@@ -121,10 +122,14 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         return None, "Payer passphrase cannot be empty"
 
     # Hard dedup — refuse to create a second escrow for the same task within 1 hour
+    # Write "pending" BEFORE any blockchain calls — prevents race condition with parallel tool calls
     existing = _dedup_check(task_description)
-    if existing:
+    if existing and existing != "pending":
         print(f"  Duplicate detected — escrow {existing} already created for this task.")
         return {"escrow_id": existing, "duplicate": True}, None
+    if existing == "pending":
+        return None, "Escrow creation already in progress for this task — wait and retry."
+    _dedup_record(task_description, "pending")  # reserve slot immediately
 
     api = get_api(network)
 
