@@ -297,6 +297,13 @@ def release_payment(operator_passphrase, escrow_id, network=None):
     if err:
         return None, err
 
+    if escrow_data["state"] == STATE_RELEASED:
+        release_tx = escrow_data.get("release_tx", "unknown")
+        return None, f"Escrow already released — TX: {release_tx}. Nothing to do."
+
+    if escrow_data["state"] == STATE_REFUNDED:
+        return None, f"Escrow already refunded. Nothing to do."
+
     if escrow_data["state"] != STATE_SUBMITTED:
         return None, f"Escrow not in SUBMITTED state (current: {escrow_data['state']})"
 
