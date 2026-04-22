@@ -229,11 +229,16 @@ def load_openclaw_llm():
 
 def load_worker_config():
     """
-    Load worker passphrase from signaai-worker.json.
-    LLM provider/model/key are read from OpenClaw's models.json automatically —
-    the same place OpenClaw stores them, readable by launchd daemons.
+    Load agent config from signaai-worker.json.
+
+    Any agent can act as payer, worker, or both — the config just provides
+    the passphrase and LLM credentials. Role is determined by what messages
+    arrive at the monitored address:
+      - ESCROW:ASSIGN  → worker role (execute task, submit result)
+      - payer-queue    → payer role  (create escrow for another agent)
+
+    LLM provider/model/key are read from OpenClaw's models.json automatically.
     Only passphrase is required in signaai-worker.json.
-    Returns config dict or None if not configured.
     """
     if not os.path.exists(WORKER_CFG):
         return None
@@ -250,14 +255,14 @@ def load_worker_config():
             return None
 
         provider, model_id, base_url, api_key = llm
-        cfg["passphrase"]     = passphrase
-        cfg["provider"]       = provider
-        cfg["model"]          = model_id
-        cfg["baseUrl"]        = base_url
-        cfg["apiKey"]         = api_key
+        cfg["passphrase"] = passphrase
+        cfg["provider"]   = provider
+        cfg["model"]      = model_id
+        cfg["baseUrl"]    = base_url
+        cfg["apiKey"]     = api_key
         return cfg
     except Exception as e:
-        log(f"Worker config error: {e}")
+        log(f"Agent config error: {e}")
         return None
 
 
@@ -824,7 +829,7 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
 def poll_once(address, network, state, tg_token, tg_chat_id,
               hook_token=None, hook_path="/hooks", gw_port=18789,
               worker_cfg=None):
-    # Check payer queue first — create any pending escrows
+    # Check payer queue — any agent can create escrows for other agents
     process_payer_queue(address, network, worker_cfg, tg_token, tg_chat_id)
 
     api = get_api(network)
@@ -866,7 +871,7 @@ def main():
     print(f"  Tasks:       {TRIGGER_FILE}", flush=True)
     print(f"  Telegram:    {'enabled' if tg_token else 'disabled'}", flush=True)
     if worker_cfg:
-        print(f"  Mode:        AUTONOMOUS (LLM + blockchain in daemon)", flush=True)
+        print(f"  Mode:        AUTONOMOUS — payer + worker (any agent can be either)", flush=True)
         provider = worker_cfg.get("provider", "?")
         model    = worker_cfg.get("model", "?")
         has_key  = bool(worker_cfg.get("apiKey")) or provider == "ollama"
