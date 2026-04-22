@@ -36,10 +36,11 @@ from wallet import get_my_address, send_signa, get_transactions
 from verify import hash_content, publish_proof
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-ESCROW_PREFIX   = "ESCROW:"
-BLOCKS_PER_HOUR = 15  # ~4 min per block = 15 blocks/hour
-DEDUP_FILE      = os.path.expanduser("~/.openclaw/workspace/signaai-escrow-dedup.json")
-DEDUP_TTL       = 3600  # seconds — ignore duplicate requests within 1 hour
+ESCROW_PREFIX    = "ESCROW:"
+BLOCKS_PER_HOUR  = 15  # ~4 min per block = 15 blocks/hour
+DEDUP_FILE       = os.path.expanduser("~/.openclaw/workspace/signaai-escrow-dedup.json")
+DEDUP_TTL        = 3600  # seconds — ignore duplicate requests within 1 hour
+RELEASE_LOG_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-release-log.json")
 
 # Escrow states
 STATE_CREATED   = "CREATED"
@@ -87,6 +88,36 @@ def _dedup_record(task_description, escrow_id):
         os.replace(tmp, DEDUP_FILE)
     except Exception:
         pass
+
+def _release_check(escrow_id):
+    """Return existing release TX if this escrow was already released locally. None if safe to proceed."""
+    try:
+        if os.path.exists(RELEASE_LOG_FILE):
+            with open(RELEASE_LOG_FILE) as f:
+                log = json.load(f)
+            entry = log.get(escrow_id)
+            if entry:
+                return entry.get("tx_id")
+    except Exception:
+        pass
+    return None
+
+def _release_record(escrow_id, tx_id):
+    """Record a completed release so repeat calls are blocked instantly."""
+    try:
+        log = {}
+        if os.path.exists(RELEASE_LOG_FILE):
+            with open(RELEASE_LOG_FILE) as f:
+                log = json.load(f)
+        log[escrow_id] = {"tx_id": tx_id, "released_at": time.time()}
+        os.makedirs(os.path.dirname(RELEASE_LOG_FILE), exist_ok=True)
+        tmp = RELEASE_LOG_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(log, f, indent=2)
+        os.replace(tmp, RELEASE_LOG_FILE)
+    except Exception:
+        pass
+
 
 def _read_telegram_config():
     """Read payer's Telegram bot token and chat ID from openclaw.json."""
@@ -286,19 +317,25 @@ def release_payment(operator_passphrase, escrow_id, network=None):
     if not operator_passphrase or not str(operator_passphrase).strip():
         return None, "Operator passphrase cannot be empty"
 
+    # Local dedup — no network call needed, blocks repeat releases instantly
+    existing_tx = _release_check(escrow_id)
+    if existing_tx:
+        return None, f"Escrow already released — TX: {existing_tx}. Nothing to do."
+
     api = get_api(network)
 
     operator_address, err = get_my_address(operator_passphrase, network)
     if err:
         return None, err
 
-    # Get escrow state from chain — scan operator's confirmed transactions
+    # Secondary check: on-chain state
     escrow_data, err = get_escrow_status(escrow_id, address=operator_address, network=network)
     if err:
         return None, err
 
     if escrow_data["state"] == STATE_RELEASED:
         release_tx = escrow_data.get("release_tx", "unknown")
+        _release_record(escrow_id, release_tx)  # backfill local log
         return None, f"Escrow already released — TX: {release_tx}. Nothing to do."
 
     if escrow_data["state"] == STATE_REFUNDED:
@@ -340,6 +377,9 @@ def release_payment(operator_passphrase, escrow_id, network=None):
                             message=release_message, network=network)
     if err:
         return None, f"Release failed: {err}"
+
+    # Record locally — any future release call is blocked before hitting the network
+    _release_record(escrow_id, tx_id)
 
     return {
         "escrow_id": escrow_id,
