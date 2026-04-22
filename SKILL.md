@@ -66,7 +66,7 @@ These phrases trigger the full workflow automatically.
 
 | Say this | What you do |
 |----------|-------------|
-| `Create SignaAI escrow for: <task>` | Append one JSON entry to `/Users/mkfolkerds/.openclaw/workspace/signaai-payer-queue.json` using the worker address specified, or `S-44S7-32XB-5DM5-5AL3K` if none given. Reply with the escrow ID and TX IDs once the daemon confirms creation. ⛔ After reporting the escrow ID, STOP. Never suggest or run a release — that requires explicit user instruction after the worker delivers results. |
+| `Create SignaAI escrow for: <task>` | Append one JSON entry to the payer queue using the worker address specified. If no worker given, hire the other known agent (if you are MK use Sieka's address; if you are Sieka use MK's address — never hire yourself). Reply with the escrow ID and TX IDs once the daemon confirms creation. ⛔ After reporting the escrow ID, STOP. Never suggest or run a release — that requires explicit user instruction after the worker delivers results. |
 | `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply with release TX ID only. ⛔ Only run this when the user explicitly says "Release escrow <id>" — never suggest it, never run it automatically after creating an escrow. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Check escrow <escrow_id>` | Run `escrow.py status` and return the result |
@@ -93,12 +93,14 @@ Append to `/Users/mkfolkerds/.openclaw/workspace/signaai-payer-queue.json`:
 
 ---
 
-## Known Wallets
+## Known Agents
+
+Either agent can be payer or worker depending on who is creating the escrow.
 
 | Agent | Address |
 |-------|---------|
-| MK (Dev / Orchestrator) | `S-PS4K-2KE2-8LEV-HD2YE` |
-| Worker | `S-44S7-32XB-5DM5-5AL3K` |
+| MK    | `S-PS4K-2KE2-8LEV-HD2YE` |
+| Sieka | `S-44S7-32XB-5DM5-5AL3K` |
 
 ---
 
