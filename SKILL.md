@@ -64,7 +64,7 @@ These phrases trigger the full workflow automatically.
 
 | Say this | What you do |
 |----------|-------------|
-| `Create SignaAI escrow for: <task>` | Append one JSON entry to `/Users/mkfolkerds/.openclaw/workspace/signaai-payer-queue.json` using the worker address specified, or `S-44S7-32XB-5DM5-5AL3K` if none given. Reply with "Queued. ✓ The daemon will create the escrow and notify you." — nothing else. Do NOT output an escrow ID, do NOT suggest a release command, do NOT add next steps. |
+| `Create SignaAI escrow for: <task>` | Append one JSON entry to `/Users/mkfolkerds/.openclaw/workspace/signaai-payer-queue.json` using the worker address specified, or `S-44S7-32XB-5DM5-5AL3K` if none given. Reply with the escrow ID and TX IDs once the daemon confirms creation. ⛔ After reporting the escrow ID, STOP. Never suggest or run a release — that requires explicit user instruction after the worker delivers results. |
 | `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply with release TX ID only. ⛔ Only run this when the user explicitly says "Release escrow <id>" — never suggest it, never run it automatically after creating an escrow. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Check escrow <escrow_id>` | Run `escrow.py status` and return the result |
@@ -204,17 +204,19 @@ The demo is split into two separate prompts. Do NOT try to do both in one sessio
 
 ### PAYER PROMPT (run on Machine 1)
 
-> Check memory/tasks.md. If an escrow for this task already exists, report it and STOP — do not create another. Otherwise queue ONE escrow and STOP. Do not wait for the worker. Do not check status. Do not release. Do not suggest releasing. Just queue and stop.
+> Check memory/tasks.md. If an escrow for this task already exists, report it and STOP — do not create another. Otherwise create ONE escrow, report the escrow ID and TX IDs, and STOP.
 
 Steps:
 ```
 1. Read memory/tasks.md — if task already complete, stop immediately
-2. Append to signaai-payer-queue.json with status: pending
-3. Write to memory/tasks.md: task description, queued_at timestamp
-4. Reply: "Queued. ✓ The daemon will create the escrow and notify you." and STOP
+2. Check balance        → wallet.py balance
+3. Queue ONE escrow     → append to signaai-payer-queue.json
+4. Wait for daemon confirmation, then report: escrow ID, Record TX, Fund TX
+5. Write to memory/tasks.md: escrow ID, TX IDs, task description
+6. STOP
 ```
 
-⛔ **Output ONLY "Queued. ✓ The daemon will create the escrow and notify you." — no escrow ID (you don't have one yet), no release command, no next steps, no offers to continue. The daemon handles everything from here.**
+⛔ **After step 6, output ONLY the escrow ID and TX IDs. No release command. No "when they submit..." instructions. No next steps. The worker daemon handles everything automatically — your job ends at reporting the escrow.**
 
 ---
 
