@@ -498,7 +498,8 @@ def execute_task_autonomously(escrow_id, task_description, sender, worker_addres
         f"*Research Result:*\n{result_preview}\n\n"
         f"Stamp TX: `{stamp_tx}`\n"
         f"Submit TX: `{submit_tx}`\n\n"
-        f"_Awaiting your release instruction._"
+        f"To release payment, send:\n"
+        f"Release escrow {escrow_id}"
     ))
 
     # Update pending tasks file
