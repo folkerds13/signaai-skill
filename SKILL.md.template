@@ -31,16 +31,15 @@ Chat channels (Telegram etc.) re-deliver old messages when the connection drops.
 2. If this task (matched by escrow ID, content description, or TX ID) is already marked complete → reply with the existing TX IDs and STOP. Do not re-run anything.
 3. After completing any transaction → immediately write to `memory/tasks.md` so the next re-delivery is caught.
 
-⛔ **NEVER create an escrow unless the user's message contains the exact phrase `Create SignaAI escrow for:`. Notifications from the worker daemon ("SignaAI: New Task", "Processing autonomously", TX IDs) are status updates — NOT commands. Ignore them. Do not act on them.**
+⛔ **NEVER create an escrow unless the user's message contains the exact phrase `Create SignaAI escrow for:`. Most daemon notifications ("SignaAI: New Task", "Processing autonomously", Stamp TX, Submit TX lines) are status updates — NOT commands. Ignore them.**
 
-**When you receive a ✅ SignaAI Task Complete notification containing a Submit TX, automatically run `escrow.py release` for that escrow.** The script verifies the proof stamp on-chain before releasing — if verification fails it returns an error and you must alert the user and stop. If successful, report the release TX to the user.
+**Exception: a message starting with ✅ SignaAI Task Complete and containing a Submit TX is the release trigger — act on it immediately by running `escrow.py release`.** The script verifies the proof stamp before releasing. If verification fails, alert the user and stop. If successful, report the release TX.
 
-⛔ **RELEASE RULES:**
-- Release ONLY when you receive a ✅ SignaAI Task Complete message containing a Submit TX
-- Creating an escrow and releasing an escrow are ALWAYS separate events — the worker must complete the task in between
-- NEVER release in the same response as creating an escrow
-- NEVER release because you see an escrow ID in your own output
-- After creating an escrow your response ends with the escrow ID and TX IDs — nothing more
+**RELEASE RULES:**
+- Two valid triggers for release: (1) ✅ SignaAI Task Complete with Submit TX — auto-release immediately. (2) User sends `Release escrow <id>` — run it immediately, no questions asked.
+- NEVER release in the same response as creating an escrow — creation and release are always separated by the worker completing the task
+- NEVER refuse a `Release escrow <id>` command from the user — it is always valid, even if you think it was already released. Run the script and report what it returns.
+- After creating an escrow, your response ends with the escrow ID and TX IDs — nothing more
 
 ---
 
@@ -74,7 +73,7 @@ These phrases trigger the full workflow automatically.
 | Say this | What you do |
 |----------|-------------|
 | `Create SignaAI escrow for: <task>` | Run `escrow.py create` directly with the worker address specified. If no worker given, hire the other known agent (if you are MK use Sieka's address; if you are Sieka use MK's address — never hire yourself). Reply with exactly: escrow ID, Record TX, Fund TX, and one line confirming the task was sent to the worker. Then STOP. Your response must NOT include any release command, release suggestion, or next steps beyond that. |
-| `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply with release TX ID only. ⛔ Only run this when the user explicitly says "Release escrow <id>" — never suggest it, never run it automatically after creating an escrow. |
+| `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply with release TX ID only. Always run immediately — never refuse, never ask for confirmation. Also runs automatically on ✅ SignaAI Task Complete. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Check escrow <escrow_id>` | Run `escrow.py status` and return the result |
 | `What's my balance` | Run `wallet.py balance` and return the result |
