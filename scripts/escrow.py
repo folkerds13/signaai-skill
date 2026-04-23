@@ -22,7 +22,6 @@ Usage:
   python3 escrow.py release <operator_passphrase> <escrow_id>
   python3 escrow.py refund <operator_passphrase> <escrow_id>
   python3 escrow.py status <escrow_id>
-  python3 escrow.py list <address>
 """
 import sys
 import os

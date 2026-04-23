@@ -1,58 +1,49 @@
 #!/bin/bash
-# SignaAI Skill Setup — configures exec approvals, listener daemon, and cron job
+# SignaAI skill setup — run on each machine after cloning and after git pull.
+#
+# What this does:
+#   1. Rewrites SKILL.md with this machine's actual home path
+#   2. Configures OpenClaw exec approvals for all skill scripts
+#   3. Creates and loads the launchd listener daemon
+#   4. Creates ~/.openclaw/signaai-worker.json with this machine's passphrase
 
 set -e
 
-SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/workspace/skills/signaai}"
+SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 APPROVALS_FILE="$HOME/.openclaw/exec-approvals.json"
 PLIST_FILE="$HOME/Library/LaunchAgents/io.signaai.listener.plist"
 LOG_FILE="$HOME/.openclaw/logs/signaai-listener.log"
-WORKER_ADDRESS=""
+WORKER_CFG="$HOME/.openclaw/signaai-worker.json"
+PLACEHOLDER="/Users/mkfolkerds"
 
-# Parse flags
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --address) WORKER_ADDRESS="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-
-echo "SignaAI Skill Setup"
-echo "==================="
-
-# Find python3
-PYTHON3=$(which python3 2>/dev/null || echo "")
-if [ -z "$PYTHON3" ]; then
-  echo "ERROR: python3 not found. Install it first."
-  exit 1
-fi
-echo "python3: $PYTHON3"
-
-# Find git
-GIT=$(which git 2>/dev/null || echo "")
-if [ -z "$GIT" ]; then
-  echo "ERROR: git not found. Install it first."
-  exit 1
-fi
-echo "git:     $GIT"
-
-# Find ls
-LS=$(which ls 2>/dev/null || echo "/bin/ls")
-echo "ls:      $LS"
-
-# Check approvals file exists
-if [ ! -f "$APPROVALS_FILE" ]; then
-  echo "ERROR: $APPROVALS_FILE not found. Is OpenClaw installed?"
-  exit 1
-fi
-
-# ── 1. Exec approvals ─────────────────────────────────────────────────────────
+echo "SignaAI Setup"
+echo "  Skill dir: $SKILL_DIR"
+echo "  Home:      $HOME"
 echo ""
-echo "Configuring exec approvals..."
-python3 - <<PYEOF
+
+# ── 1. Rewrite SKILL.md paths ─────────────────────────────────────────────────
+
+# Generate SKILL.md from template with this machine's actual paths.
+# SKILL.md is gitignored — always regenerated here, never committed.
+# To update the template: edit SKILL.md.template and push.
+cp "$SKILL_DIR/SKILL.md.template" "$SKILL_DIR/SKILL.md"
+sed -i '' "s|$PLACEHOLDER|$HOME|g" "$SKILL_DIR/SKILL.md"
+echo "✓ SKILL.md generated for $HOME"
+
+# ── 2. Exec approvals ─────────────────────────────────────────────────────────
+
+PYTHON3=$(which python3 2>/dev/null || echo "")
+GIT=$(which git 2>/dev/null || echo "")
+
+if [ ! -f "$APPROVALS_FILE" ]; then
+    echo "⚠  $APPROVALS_FILE not found — skipping exec approvals (is OpenClaw installed?)"
+elif [ -z "$PYTHON3" ]; then
+    echo "⚠  python3 not found — skipping exec approvals"
+else
+    python3 - <<PYEOF
 import json, uuid, os
 
-path = os.path.expanduser("$APPROVALS_FILE")
+path = "$APPROVALS_FILE"
 with open(path) as f:
     data = json.load(f)
 
@@ -61,7 +52,7 @@ data["defaults"].update({
     "security": "allowlist",
     "ask": "on-miss",
     "askFallback": "deny",
-    "autoAllowSkills": True
+    "autoAllowSkills": True,
 })
 
 data.setdefault("agents", {})
@@ -70,60 +61,90 @@ data["agents"]["main"].update({
     "security": "allowlist",
     "ask": "on-miss",
     "askFallback": "deny",
-    "autoAllowSkills": True
+    "autoAllowSkills": True,
 })
 data["agents"]["main"].setdefault("allowlist", [])
-
 allowlist = data["agents"]["main"]["allowlist"]
 
 entries = [
-    ("$LS",      "ls ~/.openclaw/workspace/skills/"),
     ("$PYTHON3", "python3 $SKILL_DIR/scripts/wallet.py"),
-    ("$GIT",     "git -C $SKILL_DIR pull origin main"),
+    ("/bin/ls",  "ls $HOME/.openclaw/workspace/skills/"),
 ]
+if "$GIT":
+    entries.append(("$GIT", "git -C $SKILL_DIR pull origin main"))
 
 for pattern, cmd in entries:
-    already = any(e.get("pattern") == pattern for e in allowlist)
-    if not already:
+    if not pattern:
+        continue
+    if not any(e.get("pattern") == pattern for e in allowlist):
         allowlist.append({
             "id": str(uuid.uuid4()).upper(),
             "pattern": pattern,
             "lastUsedAt": 0,
             "lastUsedCommand": cmd,
-            "lastResolvedPath": pattern
+            "lastResolvedPath": pattern,
         })
-        print(f"  Added: {pattern}")
-    else:
-        print(f"  Already approved: {pattern}")
 
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
-
-print("exec-approvals.json updated.")
 PYEOF
+    echo "✓ Exec approvals configured"
+fi
 
-# ── 2. Resolve tilde paths in SKILL.md ────────────────────────────────────────
+# ── 3. Worker passphrase ──────────────────────────────────────────────────────
+
 echo ""
-sed -i '' "s|~/.openclaw|$HOME/.openclaw|g" "$SKILL_DIR/SKILL.md" 2>/dev/null || \
-  sed -i "s|~/.openclaw|$HOME/.openclaw|g" "$SKILL_DIR/SKILL.md"
-echo "SKILL.md paths resolved to: $HOME/.openclaw"
 
-# ── 3. Listener launchd daemon (macOS only) ───────────────────────────────────
+EXISTING_PASSPHRASE=""
+if [ -f "$WORKER_CFG" ]; then
+    EXISTING_PASSPHRASE=$(python3 -c \
+        "import json; print(json.load(open('$WORKER_CFG')).get('passphrase',''))" 2>/dev/null || echo "")
+fi
+
+if [ -t 0 ]; then
+    if [ -n "$EXISTING_PASSPHRASE" ]; then
+        echo "Worker passphrase already set. Press Enter to keep it, or type a new one:"
+    else
+        echo "Enter this machine's wallet passphrase (stored in $WORKER_CFG):"
+    fi
+    echo -n "> "
+    read -r INPUT_PASSPHRASE
+    PASSPHRASE="${INPUT_PASSPHRASE:-$EXISTING_PASSPHRASE}"
+else
+    PASSPHRASE="$EXISTING_PASSPHRASE"
+fi
+
+if [ -n "$PASSPHRASE" ]; then
+    python3 - <<PYEOF
+import json, os
+path = "$WORKER_CFG"
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        pass
+data["passphrase"] = """$PASSPHRASE"""
+data.pop("default_worker", None)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+os.chmod(path, 0o600)
+PYEOF
+    echo "✓ Worker config saved: $WORKER_CFG"
+else
+    echo "⚠  No passphrase set — autonomous mode will be disabled until you create $WORKER_CFG"
+fi
+
+# ── 4. Launchd daemon ─────────────────────────────────────────────────────────
+
+echo ""
+
 if [ "$(uname)" = "Darwin" ]; then
-  echo ""
-  echo "Setting up listener daemon..."
-
-  # Prompt for wallet address only if running interactively and none provided
-  if [ -z "$WORKER_ADDRESS" ] && [ -t 0 ]; then
-    echo ""
-    echo "Which wallet should this machine monitor for incoming tasks?"
-    echo "  (Find yours: python3 $SKILL_DIR/scripts/wallet.py --network mainnet myaddress <passphrase>)"
-    echo -n "Wallet address [leave blank to skip]: "
-    read -r WORKER_ADDRESS
-  fi
-
-  if [ -n "$WORKER_ADDRESS" ]; then
     mkdir -p "$(dirname "$LOG_FILE")"
+    mkdir -p "$(dirname "$PLIST_FILE")"
+
     cat > "$PLIST_FILE" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -136,17 +157,15 @@ if [ "$(uname)" = "Darwin" ]; then
         <string>$PYTHON3</string>
         <string>-u</string>
         <string>$SKILL_DIR/scripts/listener.py</string>
-        <string>--address</string>
-        <string>$WORKER_ADDRESS</string>
         <string>--network</string>
         <string>mainnet</string>
-        <string>--poll-interval</string>
-        <string>120</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>StandardOutPath</key>
     <string>$LOG_FILE</string>
     <key>StandardErrorPath</key>
@@ -157,67 +176,19 @@ if [ "$(uname)" = "Darwin" ]; then
 </plist>
 PLIST
 
-    # Unload existing if present, then load
     launchctl unload "$PLIST_FILE" 2>/dev/null || true
     launchctl load "$PLIST_FILE"
-    echo "  Listener started — watching $WORKER_ADDRESS"
+    echo "✓ Daemon loaded: io.signaai.listener"
     echo "  Log: $LOG_FILE"
-  else
-    echo "  Skipped. To set up later: re-run setup.sh"
-  fi
+else
+    echo "  Non-macOS — skipping launchd setup. Run manually:"
+    echo "  bash $SKILL_DIR/run.sh"
 fi
-
-# ── 4. Worker config (autonomous daemon) ─────────────────────────────────────
-WORKER_CFG="$HOME/.openclaw/signaai-worker.json"
-PASSPHRASE=""
 
 echo ""
-echo "Worker configuration"
-echo "--------------------"
-
-# Load existing passphrase if file exists
-if [ -f "$WORKER_CFG" ]; then
-  PASSPHRASE=$(python3 -c "import json; d=json.load(open('$WORKER_CFG')); print(d.get('passphrase',''))" 2>/dev/null || echo "")
-fi
-
-# Prompt for passphrase if running interactively
-if [ -t 0 ]; then
-  echo ""
-  echo "Your wallet passphrase is needed for autonomous escrow creation and task submission."
-  if [ -n "$PASSPHRASE" ]; then
-    echo -n "Passphrase [leave blank to keep existing]: "
-  else
-    echo -n "Passphrase: "
-  fi
-  read -r INPUT_PASSPHRASE
-  [ -n "$INPUT_PASSPHRASE" ] && PASSPHRASE="$INPUT_PASSPHRASE"
-fi
-
-# Write config
-python3 - <<PYEOF
-import json, os
-path = "$WORKER_CFG"
-data = {}
-if os.path.exists(path):
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-data["passphrase"] = "$PASSPHRASE"
-data["apiKey"]     = data.get("apiKey", "")
-# Remove legacy default_worker if present
-data.pop("default_worker", None)
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-os.chmod(path, 0o600)
-print(f"Worker config saved: {path}")
-if data["passphrase"]:
-    print("  passphrase: set")
-else:
-    print("  passphrase: NOT SET — autonomous mode disabled")
-PYEOF
-
-echo ""
-echo "Done. Restart OpenClaw to apply:"
+echo "Setup complete. Restart OpenClaw:"
 echo "  openclaw gateway restart"
+echo ""
+echo "Verify daemon is running:"
+echo "  launchctl list | grep signaai"
+echo "  tail -f $LOG_FILE"

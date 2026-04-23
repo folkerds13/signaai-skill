@@ -52,9 +52,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, ts, ok
 
 ESCROW_PREFIX    = "ESCROW:ASSIGN:"
-STATE_FILE       = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
-TRIGGER_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
-PAYER_QUEUE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-payer-queue.json")
+STATE_FILE   = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
+TRIGGER_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
 
 # Single-worker task queue — processes one escrow at a time, no parallel races
 _task_queue = queue.Queue()
@@ -126,23 +125,6 @@ def save_pending(tasks):
     with open(tmp, "w") as f:
         json.dump(tasks, f, indent=2)
     os.replace(tmp, TRIGGER_FILE)
-
-def load_payer_queue():
-    if os.path.exists(PAYER_QUEUE_FILE):
-        try:
-            with open(PAYER_QUEUE_FILE) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return []
-    return []
-
-def save_payer_queue(items):
-    os.makedirs(os.path.dirname(PAYER_QUEUE_FILE), exist_ok=True)
-    tmp = PAYER_QUEUE_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(items, f, indent=2)
-    os.replace(tmp, PAYER_QUEUE_FILE)
-
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -231,11 +213,9 @@ def load_worker_config():
     """
     Load agent config from signaai-worker.json.
 
-    Any agent can act as payer, worker, or both — the config just provides
-    the passphrase and LLM credentials. Role is determined by what messages
-    arrive at the monitored address:
+    Any agent can act as payer or worker — role is determined by context:
       - ESCROW:ASSIGN  → worker role (execute task, submit result)
-      - payer-queue    → payer role  (create escrow for another agent)
+      - Payers call escrow.py create directly (dedup prevents duplicates)
 
     LLM provider/model/key are read from OpenClaw's models.json automatically.
     Only passphrase is required in signaai-worker.json.
@@ -515,66 +495,6 @@ def execute_task_autonomously(escrow_id, task_description, sender, worker_addres
     log(f"[{escrow_id}] Complete ✓  stamp={stamp_tx}  submit={submit_tx}")
 
 
-# ── Payer queue processor ─────────────────────────────────────────────────────
-
-def process_payer_queue(address, network, worker_cfg, tg_token, tg_chat_id):
-    """
-    Check the payer queue file for pending escrow creation requests.
-    Called periodically from the main loop — no LLM involvement.
-    The LLM writes tasks here; Python creates the escrow deterministically.
-    """
-    if not worker_cfg:
-        return
-
-    items = load_payer_queue()
-    pending = [i for i in items if i.get("status") == "pending"]
-    if not pending:
-        return
-
-    sys.path.insert(0, os.path.dirname(__file__))
-    from escrow import create_escrow
-
-    passphrase = worker_cfg["passphrase"]
-
-    for item in pending:
-        task        = item.get("task", "").strip()
-        worker_addr = item.get("worker_address", "").strip()
-        amount      = float(item.get("amount", 1.0))
-        item_id     = item.get("id", "")
-
-        if not task or not worker_addr:
-            item["status"] = "error"
-            item["error"]  = "Missing task or worker_address"
-            continue
-
-        log(f"Payer queue: creating escrow for '{task[:60]}...'")
-        escrow, err = create_escrow(passphrase, worker_addr, amount, task,
-                                     deadline_hours=24, network=network)
-        if err:
-            log(f"Payer queue: escrow creation failed — {err}")
-            item["status"] = "error"
-            item["error"]  = err
-            send_telegram(tg_token, tg_chat_id,
-                          f"❌ *Escrow creation failed*\n{err}")
-            continue
-
-        if escrow.get("duplicate"):
-            escrow_id = escrow["escrow_id"]
-            log(f"Payer queue: duplicate — existing escrow {escrow_id}")
-            item["status"]    = "duplicate"
-            item["escrow_id"] = escrow_id
-        else:
-            escrow_id = escrow["escrow_id"]
-            log(f"Payer queue: escrow created — {escrow_id}")
-            item["status"]    = "created"
-            item["escrow_id"] = escrow_id
-
-        send_telegram(tg_token, tg_chat_id,
-                      f"✅ *Escrow Created*\nID: `{escrow_id}`\nTask: {task[:100]}")
-
-    save_payer_queue(items)
-
-
 # ── Transaction handler ───────────────────────────────────────────────────────
 
 def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
@@ -829,9 +749,6 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
 def poll_once(address, network, state, tg_token, tg_chat_id,
               hook_token=None, hook_path="/hooks", gw_port=18789,
               worker_cfg=None):
-    # Check payer queue — any agent can create escrows for other agents
-    process_payer_queue(address, network, worker_cfg, tg_token, tg_chat_id)
-
     api = get_api(network)
     result = api.get("getAccountTransactions",
                      account=address,
@@ -855,7 +772,7 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
 
 def main():
     parser = argparse.ArgumentParser(description="SignaAI Autonomous Worker Daemon")
-    parser.add_argument("--address",       required=True,  help="Wallet address to monitor")
+    parser.add_argument("--address",       default=None,   help="Wallet address to monitor (derived from signaai-worker.json if omitted)")
     parser.add_argument("--network",       default="mainnet", choices=["mainnet", "testnet"])
     parser.add_argument("--poll-interval", type=int, default=POLL_INTERVAL)
     parser.add_argument("--once",          action="store_true", help="Poll once and exit")
@@ -864,6 +781,16 @@ def main():
 
     tg_token, tg_chat_id, hook_token, hook_path, gw_port = load_openclaw_config()
     worker_cfg = load_worker_config()
+
+    # Derive address from worker config if not supplied on the command line
+    if not args.address:
+        if not worker_cfg:
+            parser.error("--address is required when no signaai-worker.json is present")
+        from wallet import get_my_address
+        addr, err = get_my_address(worker_cfg["passphrase"], args.network)
+        if err:
+            parser.error(f"Could not derive address from worker config: {err}")
+        args.address = addr
 
     print(f"SignaAI Listener starting", flush=True)
     print(f"  Address:     {args.address}", flush=True)
