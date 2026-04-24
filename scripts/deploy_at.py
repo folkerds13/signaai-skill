@@ -109,12 +109,15 @@ def gen_preimage():
     return preimage, hashed
 
 
-def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex, network=None):
+def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex,
+              escrow_id=None, network=None):
     """
     Deploy the SignaAIEscrow AT contract on Signum.
+    Polls until the AT address is confirmed on-chain (up to 6 min).
 
     Returns AT address and transaction ID.
     """
+    import time
     api = get_api(network)
 
     # Get worker numeric account ID
@@ -129,7 +132,10 @@ def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex, 
     # AT deployment fee minimum is 0.5 SIGNA on mainnet
     deploy_fee_nqt = 50_000_000  # 0.5 SIGNA
 
-    print(f"  Deploying AT contract...")
+    # Use escrow_id in name for uniqueness when multiple escrows exist simultaneously
+    at_name = f"SignaAI-{escrow_id}" if escrow_id else "SignaAIEscrow"
+
+    print(f"  Deploying AT contract ({at_name})...")
     print(f"  Worker:           {worker_address}")
     print(f"  Deadline:         {deadline_minutes} minutes ({deadline_minutes//60}h)")
     print(f"  Hash of preimage: {sha256_hex(preimage_hex)[:16]}...")
@@ -137,7 +143,7 @@ def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex, 
     result = api.post(
         "createATProgram",
         secretPhrase=payer_passphrase,
-        name="SignaAIEscrow",
+        name=at_name,
         description="SignaAI agent task escrow - hash preimage release",
         code=AT_CODE_HEX,
         data=data_hex,
@@ -152,16 +158,29 @@ def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex, 
         return None, f"Deployment failed: {result.get('error')}"
 
     tx_id = result.get("transaction")
+    print(f"  Deploy TX: {tx_id}")
 
-    # AT address is assigned after TX confirms — query account ATs to find it
+    # Poll until AT appears on-chain (requires block confirmation, ~4 min)
     at_address = None
     payer_address, _ = get_my_address(payer_passphrase, network)
     if payer_address:
-        ats = api.get("getAccountATs", account=payer_address)
-        for at in (ats.get("ats") or []):
-            if at.get("name") == "SignaAIEscrow":
-                at_address = at.get("atRS")
+        deadline = time.time() + 360  # 6 min timeout
+        attempt = 0
+        while time.time() < deadline:
+            time.sleep(15)
+            attempt += 1
+            print(f"  Waiting for AT confirmation... ({attempt * 15}s)", flush=True)
+            ats = api.get("getAccountATs", account=payer_address)
+            for at in (ats.get("ats") or []):
+                if at.get("name") == at_name:
+                    at_address = at.get("atRS")
+                    break
+            if at_address:
+                print(f"  AT confirmed: {at_address}")
                 break
+
+    if not at_address:
+        return None, "AT not found after 6 minutes — check explorer and retry"
 
     return {
         "tx_id": tx_id,
@@ -172,14 +191,16 @@ def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex, 
     }, None
 
 
-def submit_preimage(worker_passphrase, at_address, preimage_hex, network=None):
+def submit_preimage(submitter_passphrase, at_address, preimage_hex, network=None):
     """
-    Worker submits the preimage to the AT contract to claim payment.
-    The AT verifies SHA256(preimage) == stored hash → releases funds.
+    Submit the preimage to the AT contract to trigger payment release.
+    The AT verifies SHA256(preimage) == stored hash → releases funds to worker.
+
+    Called by the payer (via escrow.py release) — not the worker.
     """
     api = get_api(network)
 
-    worker_address, err = get_my_address(worker_passphrase, network)
+    worker_address, err = get_my_address(submitter_passphrase, network)
     if err:
         return None, err
 
@@ -191,7 +212,7 @@ def submit_preimage(worker_passphrase, at_address, preimage_hex, network=None):
 
     result = api.post(
         "sendMoney",
-        secretPhrase=worker_passphrase,
+        secretPhrase=submitter_passphrase,
         recipient=at_address,
         amountNQT=AT_MIN_ACTIVATION_NQT,  # must send at least activation amount
         message=message,
@@ -256,10 +277,10 @@ def main():
     p.add_argument("preimage_hex", help="32-byte hex preimage (from gen-preimage)")
 
     # submit
-    p = sub.add_parser("submit", help="Worker submits preimage to claim payment")
-    p.add_argument("worker_passphrase")
+    p = sub.add_parser("submit", help="Submit preimage to AT to release payment")
+    p.add_argument("submitter_passphrase")
     p.add_argument("at_address", help="AT contract address")
-    p.add_argument("preimage_hex", help="The preimage revealed by payer")
+    p.add_argument("preimage_hex", help="The preimage to reveal")
 
     # info
     p = sub.add_parser("info", help="Get AT contract state and balance")
@@ -297,7 +318,7 @@ def main():
     elif args.cmd == "submit":
         print(f"Submitting preimage to AT {args.at_address}...")
         result, err = submit_preimage(
-            args.worker_passphrase, args.at_address,
+            args.submitter_passphrase, args.at_address,
             args.preimage_hex, args.network
         )
         if err:

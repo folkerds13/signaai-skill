@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-Signum Agent Escrow — trustless task payment system (Phase 1: on-chain audit trail)
+Signum Agent Escrow — AT-backed trustless task payment system
 
 State machine:
   CREATED → SUBMITTED → RELEASED
-                      → REFUNDED (if deadline passed)
+                      → REFUNDED (if deadline passed, AT auto-refunds)
+
+Funds flow:
+  create  → payer deploys AT contract → funds AT address (money leaves payer's wallet)
+  release → payer submits preimage to AT → AT auto-releases to worker
 
 All state transitions are recorded as on-chain messages — fully auditable.
-Funds flow through the escrow operator wallet (dev wallet for prototype).
-Upgrade path: replace operator wallet with an AT contract for full trustlessness.
+AT holds funds trustlessly; once preimage is submitted, payment cannot be cancelled.
 
 On-chain message format:
-  ESCROW:CREATE:<escrow_id>:<worker>:<amount_nqt>:<result_hash>:<deadline_block>
+  ESCROW:CREATE:<escrow_id>:<worker>:<amount_nqt>:<result_hash>:<deadline_block>:<at_address>
   ESCROW:SUBMIT:<escrow_id>:<result_hash>
   ESCROW:RELEASE:<escrow_id>:<worker>
   ESCROW:REFUND:<escrow_id>:<payer>
@@ -19,8 +22,8 @@ On-chain message format:
 Usage:
   python3 escrow.py create <payer_passphrase> <worker_address> <amount> "<task_description>" [--deadline-hours 24]
   python3 escrow.py submit <worker_passphrase> <escrow_id> "<result_content>" [--sources "url1,url2"]
-  python3 escrow.py release <operator_passphrase> <escrow_id>
-  python3 escrow.py refund <operator_passphrase> <escrow_id>
+  python3 escrow.py release <payer_passphrase> <escrow_id>
+  python3 escrow.py refund <payer_passphrase> <escrow_id>
   python3 escrow.py status <escrow_id>
 """
 import sys
@@ -33,6 +36,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, signa, nqt, ts, FEE_MESSAGE, FEE_STANDARD, ok
 from wallet import get_my_address, send_signa, get_transactions
 from verify import hash_content, publish_proof
+from deploy_at import deploy_at as _at_deploy, submit_preimage as _at_submit, gen_preimage
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 ESCROW_PREFIX    = "ESCROW:"
@@ -40,6 +44,7 @@ BLOCKS_PER_HOUR  = 15  # ~4 min per block = 15 blocks/hour
 DEDUP_FILE       = os.path.expanduser("~/.openclaw/workspace/signaai-escrow-dedup.json")
 DEDUP_TTL        = 3600  # seconds — ignore duplicate requests within 1 hour
 RELEASE_LOG_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-release-log.json")
+PREIMAGE_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-escrow-preimages.json")
 
 # Escrow states
 STATE_CREATED   = "CREATED"
@@ -118,6 +123,41 @@ def _release_record(escrow_id, tx_id):
         pass
 
 
+def _store_preimage(escrow_id, preimage, at_address, deploy_tx):
+    """Store preimage securely for later release. Never goes on-chain."""
+    try:
+        store = {}
+        if os.path.exists(PREIMAGE_FILE):
+            with open(PREIMAGE_FILE) as f:
+                store = json.load(f)
+        store[escrow_id] = {
+            "preimage":   preimage,
+            "at_address": at_address,
+            "deploy_tx":  deploy_tx,
+            "created_at": time.time(),
+        }
+        os.makedirs(os.path.dirname(PREIMAGE_FILE), exist_ok=True)
+        tmp = PREIMAGE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(store, f, indent=2)
+        os.replace(tmp, PREIMAGE_FILE)
+        os.chmod(PREIMAGE_FILE, 0o600)
+    except Exception as e:
+        print(f"  Warning: could not store preimage: {e}")
+
+
+def _load_preimage(escrow_id):
+    """Load stored preimage data for an escrow. Returns {} if not found."""
+    try:
+        if os.path.exists(PREIMAGE_FILE):
+            with open(PREIMAGE_FILE) as f:
+                store = json.load(f)
+            return store.get(escrow_id, {})
+    except Exception:
+        pass
+    return {}
+
+
 def _read_telegram_config():
     """Read payer's Telegram bot token and chat ID from openclaw.json."""
     try:
@@ -184,12 +224,39 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
 
     amount_nqt = nqt(amount_signa)
 
-    # Build on-chain record message
-    message = (f"{ESCROW_PREFIX}CREATE:{escrow_id}:"
-               f"{worker_address}:{amount_nqt}:{task_hash}:{deadline_block}")
+    # Generate preimage for AT — kept secret until release
+    preimage, _ = gen_preimage()
 
-    # Step 1: Record escrow creation (payer → self) via sendMessage (no amount required)
+    # Step 1: Deploy AT contract — funds will be held trustlessly until release
+    # AT auto-refunds to payer after deadline if worker never submits
+    print(f"  Deploying AT escrow contract (takes ~4 min for block confirmation)...")
+    at_result, err = _at_deploy(
+        payer_passphrase, worker_address,
+        deadline_hours * 60, preimage,
+        escrow_id=escrow_id, network=network
+    )
+    if err:
+        return None, f"AT deployment failed: {err}"
+
+    at_address = at_result["at_address"]
+    deploy_tx  = at_result["tx_id"]
+
+    # Step 2: Fund AT — money leaves payer's wallet into the AT contract
+    print(f"  Funding AT {at_address} with {amount_signa} SIGNA...")
+    fund_message = f"{ESCROW_PREFIX}FUND:{escrow_id}"
+    fund_tx, err = send_signa(payer_passphrase, at_address, amount_signa,
+                              message=fund_message, network=network)
+    if err:
+        return None, f"Failed to fund AT: {err}"
+
+    # Store preimage locally — used at release time, never goes on-chain
+    _store_preimage(escrow_id, preimage, at_address, deploy_tx)
+
+    # Step 3: Record escrow creation on-chain (payer → self audit record)
     print(f"  Recording escrow on-chain...")
+    time.sleep(2)
+    message = (f"{ESCROW_PREFIX}CREATE:{escrow_id}:"
+               f"{worker_address}:{amount_nqt}:{task_hash}:{deadline_block}:{at_address}")
     record_result = api.post("sendMessage",
                              secretPhrase=payer_passphrase,
                              recipient=payer_address,
@@ -200,25 +267,11 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         return None, f"Failed to record escrow: {record_result.get('error')}"
     record_tx = record_result.get("transaction")
 
-    # Step 2: Transfer funds to escrow operator FIRST — fund before notifying worker
-    # In production: this sends to the AT contract address
-    print(f"  Transferring {amount_signa} SIGNA to escrow...")
-    time.sleep(2)  # brief pause between transactions
-
-    fund_message = f"{ESCROW_PREFIX}FUND:{escrow_id}"
-    fund_tx, err = send_signa(payer_passphrase, payer_address, amount_signa,
-                              message=fund_message, network=network)
-    if err:
-        return None, f"Failed to fund escrow: {err}"
-
-    # Step 3: Notify the worker — only after funds are confirmed en route
-    # Include payer Telegram contact so daemon can notify payer on completion
+    # Step 4: Notify the worker — include payer Telegram for completion notification
     print(f"  Notifying worker...")
     time.sleep(2)
     payer_tg_token, payer_tg_chat = _read_telegram_config()
     task_desc_truncated = task_description[:750]
-    # Append Telegram contact as |TG: suffix — after task description, no colon conflicts
-    # Bot tokens contain colons so they can't be used as field separators
     tg_suffix = f"|TG:{payer_tg_token}~{payer_tg_chat}" if payer_tg_token else ""
     notify_message = (f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}:"
                       f"{task_desc_truncated}{tg_suffix}")
@@ -230,17 +283,19 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
              feeNQT=FEE_MESSAGE)
 
     escrow = {
-        "escrow_id": escrow_id,
-        "state": STATE_CREATED,
-        "payer": payer_address,
-        "worker": worker_address,
+        "escrow_id":   escrow_id,
+        "state":       STATE_CREATED,
+        "payer":       payer_address,
+        "worker":      worker_address,
         "amount_signa": amount_signa,
         "task_description": task_description,
-        "task_hash": task_hash,
+        "task_hash":   task_hash,
         "deadline_block": deadline_block,
         "deadline_hours": deadline_hours,
-        "record_tx": record_tx,
-        "fund_tx": fund_tx,
+        "at_address":  at_address,
+        "deploy_tx":   deploy_tx,
+        "record_tx":   record_tx,
+        "fund_tx":     fund_tx,
         "current_block": current_block,
     }
 
@@ -369,23 +424,40 @@ def release_payment(operator_passphrase, escrow_id, network=None):
         else:
             print(f"  Warning: could not fetch proof TX {proof_tx_id} — skipping hash check")
 
-    print(f"  Releasing {amount} SIGNA to {worker}...")
+    # Check for AT-based release (Phase 2 — funds held in AT contract)
+    preimage_data = _load_preimage(escrow_id)
+    preimage   = preimage_data.get("preimage")
+    at_address = preimage_data.get("at_address")
 
-    release_message = f"{ESCROW_PREFIX}RELEASE:{escrow_id}:{worker}"
-    tx_id, err = send_signa(operator_passphrase, worker, amount,
-                            message=release_message, network=network)
-    if err:
-        return None, f"Release failed: {err}"
+    if preimage and at_address:
+        # AT release: submit preimage → AT verifies hash → auto-releases to worker
+        # Once submitted, payer cannot cancel — AT executes on next block
+        print(f"  Submitting preimage to AT {at_address}...")
+        at_result, err = _at_submit(operator_passphrase, at_address, preimage, network)
+        if err:
+            return None, f"AT release failed: {err}"
+        tx_id = at_result["tx_id"]
+        print(f"  Preimage submitted — AT will release {amount} SIGNA to worker on next block")
+    else:
+        # Phase 1 fallback: direct payment (legacy escrows without AT)
+        print(f"  No AT found for this escrow — using direct payment...")
+        print(f"  Releasing {amount} SIGNA to {worker}...")
+        release_message = f"{ESCROW_PREFIX}RELEASE:{escrow_id}:{worker}"
+        tx_id, err = send_signa(operator_passphrase, worker, amount,
+                                message=release_message, network=network)
+        if err:
+            return None, f"Release failed: {err}"
 
     # Record locally — any future release call is blocked before hitting the network
     _release_record(escrow_id, tx_id)
 
     return {
-        "escrow_id": escrow_id,
-        "state": STATE_RELEASED,
-        "worker": worker,
+        "escrow_id":  escrow_id,
+        "state":      STATE_RELEASED,
+        "worker":     worker,
         "amount_signa": amount,
-        "tx_id": tx_id,
+        "tx_id":      tx_id,
+        "at_address": at_address or "",
     }, None
 
 
@@ -523,6 +595,7 @@ def _parse_escrow_from_txs(escrow_id, transactions):
                 "amount_signa": int(parts[3]) / 100_000_000 if parts[3].isdigit() else 0,
                 "task_hash": parts[4],
                 "deadline_block": int(parts[5]) if parts[5].isdigit() else 0,
+                "at_address": parts[6] if len(parts) > 6 else "",
                 "create_tx": tx.get("transaction"),
                 "created_at": ts(tx.get("timestamp")),
             })
@@ -610,16 +683,19 @@ def main():
         if err:
             print(f"Error: {err}")
         else:
-            print(f"\n✓ Escrow created")
+            print(f"\n✓ Escrow created (AT-backed)")
             print(f"  Escrow ID:    {result['escrow_id']}")
+            print(f"  AT address:   {result['at_address']}")
             print(f"  Payer:        {result['payer']}")
             print(f"  Worker:       {result['worker']}")
-            print(f"  Amount:       {result['amount_signa']} SIGNA")
+            print(f"  Amount:       {result['amount_signa']} SIGNA (held in AT)")
             print(f"  Task hash:    {result['task_hash']}")
             print(f"  Deadline:     block {result['deadline_block']} (~{result['deadline_hours']}h)")
+            print(f"  Deploy TX:    {result['deploy_tx']}")
             print(f"  Record TX:    {result['record_tx']}")
             print(f"  Fund TX:      {result['fund_tx']}")
             print(f"\n  Save this escrow ID: {result['escrow_id']}")
+            print(f"  Funds are now held in AT — payer cannot reclaim until deadline")
 
     elif args.cmd == "submit":
         sources = [s.strip() for s in args.sources.split(",") if s.strip()]
@@ -645,10 +721,12 @@ def main():
         if err:
             print(f"Error: {err}")
         else:
-            print(f"\n✓ Payment released")
+            print(f"\n✓ Release triggered")
             print(f"  Worker:   {result['worker']}")
             print(f"  Amount:   {result['amount_signa']} SIGNA")
             print(f"  TX:       {result['tx_id']}")
+            if result.get("at_address"):
+                print(f"  AT:       {result['at_address']} (auto-releases on next block)")
 
     elif args.cmd == "refund":
         print(f"Refunding escrow {args.escrow_id}...")

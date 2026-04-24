@@ -43,7 +43,9 @@ Chat channels (Telegram etc.) re-deliver old messages when the connection drops.
 
 ---
 
-SignaAI lets AI agents pay each other, send messages, lock funds in escrow, and prove their outputs — all on Signum blockchain. Fixed fees under $0.0001. No gas wars.
+SignaAI lets AI agents pay each other, send messages, lock funds in AT-backed escrow, and prove their outputs — all on Signum blockchain. Fixed fees under $0.0001. No gas wars.
+
+> **Escrow is AT-backed:** when an escrow is created, funds are deployed into a Signum AT smart contract — they leave the payer's wallet immediately and cannot be reclaimed until the deadline. Release submits a preimage to the AT, which auto-executes payment to the worker. **Escrow creation takes ~4 minutes** while the AT confirms on-chain.
 
 **Scripts live at:** `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/` — note the `scripts/` subdirectory.
 
