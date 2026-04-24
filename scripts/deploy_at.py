@@ -132,8 +132,8 @@ def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex,
     # AT deployment fee minimum is 0.5 SIGNA on mainnet
     deploy_fee_nqt = 50_000_000  # 0.5 SIGNA
 
-    # Use escrow_id in name for uniqueness when multiple escrows exist simultaneously
-    at_name = f"SignaAI-{escrow_id}" if escrow_id else "SignaAIEscrow"
+    # Use escrow_id in name for uniqueness (alphanumeric only — Signum requirement)
+    at_name = f"SIG{escrow_id}" if escrow_id else "SignaAIEscrow"
 
     print(f"  Deploying AT contract ({at_name})...")
     print(f"  Worker:           {worker_address}")
