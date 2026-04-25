@@ -385,7 +385,7 @@ def wait_for_confirmation(tx_id, network):
     return False
 
 
-def execute_task_autonomously(escrow_id, task_description, sender, worker_address,
+def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender, worker_address,
                                network, worker_cfg, tg_token, tg_chat_id):
     """
     Full autonomous task execution in a background thread.
@@ -408,6 +408,15 @@ def execute_task_autonomously(escrow_id, task_description, sender, worker_addres
         log(f"[{escrow_id}] FAILED: {reason}")
         send_telegram(tg_token, tg_chat_id,
                       f"❌ *SignaAI Task Failed*\nEscrow: `{escrow_id}`\n{reason}")
+
+    # Step 0: Confirm the assignment TX is on-chain before doing any work
+    # Prevents executing tasks from dropped or orphaned transactions
+    if assign_tx_id:
+        log(f"[{escrow_id}] Waiting for assignment TX to confirm...")
+        if not wait_for_confirmation(assign_tx_id, network):
+            fail(f"Assignment TX {assign_tx_id} not confirmed — task may have been dropped")
+            return
+        log(f"[{escrow_id}] Assignment confirmed ✓")
 
     # Step 1: Research via LLM
     if not api_key and provider != "ollama":
@@ -524,10 +533,12 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
     if not msg.startswith(ESCROW_PREFIX):
         return False
 
-    # Format: ESCROW:ASSIGN:<escrow_id>:<task_hash>:<task_description>|TG:<token>~<chat_id>
-    # Legacy format (no TG suffix): ESCROW:ASSIGN:<escrow_id>:<task_hash>:<task_description>
-    # |TG: suffix avoids colon-in-token parsing issues
+    # Format: ESCROW:ASSIGN:v1:<escrow_id>:<task_hash>:<description>|TG:<token>~<chat_id>
+    # Legacy (no version): ESCROW:ASSIGN:<escrow_id>:<task_hash>:<description>
     raw = msg[len(ESCROW_PREFIX):]
+    # Strip version prefix if present (v1:, v2:, etc.)
+    if raw[:2] == "v1" or (raw[0] == "v" and raw[1:2].isdigit() and raw[2:3] == ":"):
+        raw = raw[raw.index(":")+1:]
     parts = raw.split(":", 2)  # escrow_id, task_hash, rest
     escrow_id = parts[0] if len(parts) > 0 else "unknown"
     task_hash = parts[1] if len(parts) > 1 else ""
@@ -579,7 +590,7 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
         if queue_depth > 0:
             log(f"Task queued (position {queue_depth + 1}) — escrow {escrow_id}")
         _task_queue.put((execute_task_autonomously, (
-            escrow_id, task_description, sender, address,
+            escrow_id, tx_id, task_description, sender, address,
             network, worker_cfg, notify_token, notify_chat_id
         )))
     else:
@@ -824,7 +835,7 @@ def main():
                     continue
                 log(f"  Re-queuing escrow {escrow_id}")
                 _task_queue.put((execute_task_autonomously, (
-                    escrow_id, task_desc, sender, args.address,
+                    escrow_id, task.get("tx_id", ""), task_desc, sender, args.address,
                     args.network, worker_cfg, tg_token, tg_chat_id
                 )))
 

@@ -158,6 +158,25 @@ def _load_preimage(escrow_id):
     return {}
 
 
+def _check_onchain_escrow(escrow_id, address, network):
+    """Return existing escrow dict if this escrow_id already exists on-chain. None if new."""
+    api = get_api(network)
+    result = api.get("getAccountTransactions",
+                     account=address,
+                     firstIndex=0,
+                     lastIndex=49)
+    txs = [tx for tx in (result.get("transactions") or [])
+           if f"ESCROW:CREATE:{escrow_id}" in tx.get("attachment", {}).get("message", "")]
+    if not txs:
+        return None
+    escrow, _ = _parse_escrow_from_txs(escrow_id, txs)
+    preimage_data = _load_preimage(escrow_id)
+    if preimage_data.get("at_address"):
+        escrow["at_address"] = preimage_data["at_address"]
+        escrow["deploy_tx"]  = preimage_data.get("deploy_tx", "")
+    return escrow if escrow.get("payer") else None
+
+
 def _read_telegram_config():
     """Read payer's Telegram bot token and chat ID from openclaw.json."""
     try:
@@ -216,11 +235,22 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     current_block = int(status.get("numberOfBlocks", 0))
     deadline_block = current_block + (deadline_hours * BLOCKS_PER_HOUR)
 
-    # Generate unique escrow ID
-    escrow_id = secrets.token_hex(8)  # 16 char hex, unique
-
     # Hash the task description — this is what the worker must reference
     task_hash = hashlib.sha256(task_description.encode()).hexdigest()
+
+    # Deterministic escrow_id: survives machine restarts and dedup file loss
+    # Buckets to nearest hour so retries within the same hour produce the same ID
+    timestamp_bucket = int(time.time() // 3600) * 3600
+    escrow_id = hashlib.sha256(
+        f"{payer_address}:{task_hash}:{timestamp_bucket}".encode()
+    ).hexdigest()[:16]
+
+    # On-chain idempotency: check if this escrow already exists (survives local dedup loss)
+    onchain = _check_onchain_escrow(escrow_id, payer_address, network)
+    if onchain:
+        print(f"  On-chain escrow {escrow_id} already exists — returning it.")
+        _dedup_record(task_description, escrow_id)
+        return onchain, None
 
     amount_nqt = nqt(amount_signa)
 
@@ -273,7 +303,7 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     payer_tg_token, payer_tg_chat = _read_telegram_config()
     task_desc_truncated = task_description[:750]
     tg_suffix = f"|TG:{payer_tg_token}~{payer_tg_chat}" if payer_tg_token else ""
-    notify_message = (f"{ESCROW_PREFIX}ASSIGN:{escrow_id}:{task_hash}:"
+    notify_message = (f"{ESCROW_PREFIX}ASSIGN:v1:{escrow_id}:{task_hash}:"
                       f"{task_desc_truncated}{tg_suffix}")
     api.post("sendMessage",
              secretPhrase=payer_passphrase,

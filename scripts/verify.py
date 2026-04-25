@@ -45,6 +45,9 @@ def hash_content(content, sources=None):
       content_hash: SHA-256 of content only
       sources_hash: SHA-256 of sorted sources (reproducible)
       combined_hash: SHA-256 of content + sources together
+
+    Canonical artifact: raw UTF-8 bytes of the content string, no normalization.
+    Content must be identical byte-for-byte at stamp time and verify time.
     """
     if isinstance(content, str):
         content = content.encode('utf-8')
