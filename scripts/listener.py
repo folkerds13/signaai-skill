@@ -541,20 +541,9 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
     if not isinstance(parsed, EscrowMessage) or parsed.action != "ASSIGN":
         return False
 
-    escrow_id = parsed.escrow_id
-    task_hash = parsed.task_hash
-    raw_desc  = parsed.task_description
-
-    if "|TG:" in raw_desc:
-        task_description, tg_part = raw_desc.rsplit("|TG:", 1)
-        if "~" in tg_part:
-            payer_tg_token, payer_tg_chat = tg_part.split("~", 1)
-        else:
-            payer_tg_token, payer_tg_chat = "", ""
-    else:
-        task_description  = raw_desc
-        payer_tg_token    = ""
-        payer_tg_chat     = ""
+    escrow_id        = parsed.escrow_id
+    task_hash        = parsed.task_hash
+    task_description = parsed.task_description
     sender           = tx.get("senderRS", tx.get("sender", "unknown"))
 
     task = {
@@ -583,9 +572,8 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
 
     if worker_cfg and task_description:
         # Queue task for sequential processing — one at a time, no parallel races
-        # Use payer's Telegram (from ASSIGN message) for completion notification
-        notify_token   = payer_tg_token or tg_token
-        notify_chat_id = payer_tg_chat  or tg_chat_id
+        notify_token   = tg_token
+        notify_chat_id = tg_chat_id
         queue_depth = _task_queue.qsize()
         if queue_depth > 0:
             log(f"Task queued (position {queue_depth + 1}) — escrow {escrow_id}")

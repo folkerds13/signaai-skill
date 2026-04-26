@@ -62,32 +62,29 @@ def sha256_str(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def build_data_field(preimage_hex, worker_account_id, deadline_minutes):
+def build_data_field(preimage_hex, worker_account_id, deadline_block):
     """
     Build the AT data initialization field.
 
-    Memory layout (little-endian 64-bit longs):
-      [0-3] hashedKey  — SHA256(preimage), split into 4 x 8 bytes
-      [4]   worker     — worker account ID (numeric)
-      [5]   deadlineMinutes
+    Contract variable order (matches signaai_escrow.smart):
+      [0] workerAddress  — worker account ID (numeric)
+      [1] deadlineBlock  — absolute block height for refund cutoff
+      [2-5] h1..h4       — SHA256(preimage) as 4 x 64-bit little-endian longs
 
     Returns hex string for the 'data' parameter in createATProgram.
     """
+    worker_encoded   = encode_long_le(worker_account_id)
+    deadline_encoded = encode_long_le(deadline_block)
+
     # SHA256 the preimage → 32 bytes = 4 x 8-byte longs
     hash_bytes = hashlib.sha256(bytes.fromhex(preimage_hex)).digest()
-
-    # Split 32-byte hash into 4 little-endian 64-bit longs
     hash_parts = []
     for i in range(4):
         chunk = hash_bytes[i*8:(i+1)*8]
-        # Read as little-endian unsigned, store as signed (AT uses signed longs)
         val = struct.unpack('<q', chunk)[0]
         hash_parts.append(encode_long_le(val))
 
-    worker_encoded  = encode_long_le(worker_account_id)
-    deadline_encoded = encode_long_le(deadline_minutes)
-
-    return "".join(hash_parts) + worker_encoded + deadline_encoded
+    return worker_encoded + deadline_encoded + "".join(hash_parts)
 
 
 def encode_preimage_message(preimage_hex):
@@ -109,12 +106,13 @@ def gen_preimage():
     return preimage, hashed
 
 
-def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex,
+def deploy_at(payer_passphrase, worker_address, deadline_block, preimage_hex,
               escrow_id=None, network=None):
     """
     Deploy the SignaAIEscrow AT contract on Signum.
     Polls until the AT address is confirmed on-chain (up to 6 min).
 
+    deadline_block: absolute Signum block height after which the AT refunds the payer.
     Returns AT address and transaction ID.
     """
     import time
@@ -127,7 +125,7 @@ def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex,
     worker_id = int(worker_info.get("account", 0))
 
     # Build data field
-    data_hex = build_data_field(preimage_hex, worker_id, deadline_minutes)
+    data_hex = build_data_field(preimage_hex, worker_id, deadline_block)
 
     # AT deployment fee minimum is 0.5 SIGNA on mainnet
     deploy_fee_nqt = 50_000_000  # 0.5 SIGNA
@@ -137,7 +135,7 @@ def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex,
 
     print(f"  Deploying AT contract ({at_name})...")
     print(f"  Worker:           {worker_address}")
-    print(f"  Deadline:         {deadline_minutes} minutes ({deadline_minutes//60}h)")
+    print(f"  Deadline block:   {deadline_block}")
     print(f"  Hash of preimage: {sha256_hex(preimage_hex)[:16]}...")
 
     result = api.post(
@@ -186,7 +184,7 @@ def deploy_at(payer_passphrase, worker_address, deadline_minutes, preimage_hex,
         "tx_id": tx_id,
         "at_address": at_address,
         "worker": worker_address,
-        "deadline_minutes": deadline_minutes,
+        "deadline_block": deadline_block,
         "preimage_hash": sha256_hex(preimage_hex),
     }, None
 
@@ -273,7 +271,7 @@ def main():
     p = sub.add_parser("deploy", help="Deploy the escrow AT contract")
     p.add_argument("payer_passphrase")
     p.add_argument("worker_address", help="Worker agent's Signum address")
-    p.add_argument("deadline_minutes", type=int, help="Minutes until refund (e.g. 1440 = 24h)")
+    p.add_argument("deadline_block", type=int, help="Absolute block height for refund cutoff")
     p.add_argument("preimage_hex", help="32-byte hex preimage (from gen-preimage)")
 
     # submit
@@ -301,7 +299,7 @@ def main():
         print(f"Deploying SignaAI Escrow AT on {args.network}...")
         result, err = deploy_at(
             args.payer_passphrase, args.worker_address,
-            args.deadline_minutes, args.preimage_hex, args.network
+            args.deadline_block, args.preimage_hex, args.network
         )
         if err:
             print(f"Error: {err}")
@@ -310,7 +308,7 @@ def main():
             print(f"  AT address:   {result['at_address']}")
             print(f"  Deploy TX:    {result['tx_id']}")
             print(f"  Worker:       {result['worker']}")
-            print(f"  Deadline:     {result['deadline_minutes']} min ({result['deadline_minutes']//60}h)")
+            print(f"  Deadline:     block {result['deadline_block']}")
             print(f"  Preimage hash:{result['preimage_hash'][:32]}...")
             print(f"\n  Next: fund the AT by sending SIGNA to {result['at_address']}")
             print(f"  python3 wallet.py --network {args.network} send \"<passphrase>\" {result['at_address']} <amount>")
