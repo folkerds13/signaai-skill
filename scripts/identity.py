@@ -23,15 +23,14 @@ import hashlib
 sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, signa, ts, fmt_address, FEE_ALIAS, FEE_MESSAGE, ok
 from wallet import get_my_address, get_transactions
+from protocol import build_task_complete, parse_task_complete, TASK_COMPLETE_PREFIX
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
 # Aliases for AI agents follow the pattern: "sig-agent-<name>"
 ALIAS_PREFIX = ""
 
-# On-chain reputation messages follow a structured format:
-# TASK_COMPLETE:<task_id>:<result_hash>:<rating_1_to_5>
-TASK_COMPLETE_PREFIX = "TASK_COMPLETE:"
+# TASK_COMPLETE_PREFIX is now imported from protocol
 
 
 def register_agent(passphrase, agent_name, capabilities=None, version="1.0",
@@ -195,23 +194,19 @@ def get_agent_profile(address, network=None):
     for tx in (all_txs.get("transactions") or []):
         msg = tx.get("attachment", {}).get("message", "")
         if msg.startswith(TASK_COMPLETE_PREFIX):
-            parts = msg[len(TASK_COMPLETE_PREFIX):].split(":")
-            if len(parts) >= 3:
-                task_id, result_hash = parts[0], parts[1]
-                try:
-                    rating = int(parts[2])
-                    total_rating += rating
-                    rating_count += 1
-                except:
-                    rating = None
-
+            try:
+                tc = parse_task_complete(msg)
+                total_rating += tc.rating
+                rating_count += 1
                 tasks_completed.append({
-                    "task_id": task_id,
-                    "result_hash": result_hash,
-                    "rating": rating,
-                    "timestamp": ts(tx.get("timestamp")),
-                    "tx_id": tx.get("transaction"),
+                    "task_id":    tc.task_id,
+                    "result_hash": tc.result_hash,
+                    "rating":     tc.rating,
+                    "timestamp":  ts(tx.get("timestamp")),
+                    "tx_id":      tx.get("transaction"),
                 })
+            except Exception:
+                pass
 
     avg_rating = (total_rating / rating_count) if rating_count > 0 else None
 
@@ -276,7 +271,10 @@ def record_task_completion(passphrase, task_id, result_hash, rating=5, network=N
     if err:
         return None, err
 
-    message = f"{TASK_COMPLETE_PREFIX}{task_id}:{result_hash}:{rating}"
+    try:
+        message = build_task_complete(task_id, result_hash, rating)
+    except Exception as e:
+        return None, str(e)
 
     result = api.post("sendMessage",
                       secretPhrase=passphrase,

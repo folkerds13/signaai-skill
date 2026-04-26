@@ -27,11 +27,8 @@ import hashlib
 sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, ts, FEE_MESSAGE, ok, EXPLORER_URL
 from wallet import get_my_address
-
-
-# ── Proof message format ─────────────────────────────────────────────────────
-# On-chain message: SIGPROOF:v1:<content_hash>:<sources_hash>:<label>
-PROOF_PREFIX = "SIGPROOF:v1:"
+from protocol import build_sigproof, parse_sigproof
+from protocol import PROOF_PREFIX
 
 
 def hash_content(content, sources=None):
@@ -85,8 +82,7 @@ def publish_proof(passphrase, content_hash, sources_hash="", label="", network=N
         return None, err
 
     # Build proof message
-    label_clean = label[:40].replace(":", "-") if label else ""
-    message = f"{PROOF_PREFIX}{content_hash}:{sources_hash}:{label_clean}"
+    message = build_sigproof(content_hash, sources_hash, label)
 
     result = api.post("sendMessage",
                       secretPhrase=passphrase,
@@ -135,12 +131,13 @@ def verify_proof(content, tx_id, sources=None, network=None):
     if not msg.startswith(PROOF_PREFIX):
         return False, {"error": "Transaction does not contain a SIGPROOF record"}
 
-    parts = msg[len(PROOF_PREFIX):].split(":")
-    if len(parts) < 2:
+    try:
+        proof = parse_sigproof(msg)
+    except Exception:
         return False, {"error": "Malformed proof record"}
 
-    onchain_content_hash = parts[0]
-    onchain_sources_hash = parts[1] if len(parts) > 1 else ""
+    onchain_content_hash = proof.content_hash
+    onchain_sources_hash = proof.sources_hash
 
     content_match = hashes["content_hash"] == onchain_content_hash
     sources_match = (not onchain_sources_hash or
@@ -157,7 +154,7 @@ def verify_proof(content, tx_id, sources=None, network=None):
         "block": tx.get("block"),
         "onchain_content_hash": onchain_content_hash,
         "computed_content_hash": hashes["content_hash"],
-        "label": parts[2] if len(parts) > 2 else "",
+        "label": proof.label,
     }
 
 
@@ -174,12 +171,15 @@ def get_proofs(address, limit=20, network=None):
     for tx in (result.get("transactions") or []):
         msg = tx.get("attachment", {}).get("message", "")
         if msg.startswith(PROOF_PREFIX):
-            parts = msg[len(PROOF_PREFIX):].split(":")
+            try:
+                proof = parse_sigproof(msg)
+            except Exception:
+                continue
             proofs.append({
                 "tx_id": tx.get("transaction"),
                 "timestamp": ts(tx.get("timestamp")),
-                "content_hash": parts[0] if parts else "",
-                "label": parts[2] if len(parts) > 2 else "",
+                "content_hash": proof.content_hash,
+                "label": proof.label,
                 "confirmations": tx.get("confirmations", 0),
             })
 

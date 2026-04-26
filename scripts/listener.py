@@ -50,8 +50,9 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, ts, ok
+from protocol import parse_message, EscrowMessage
 
-ESCROW_PREFIX    = "ESCROW:ASSIGN:"
+ESCROW_ASSIGN_PREFIX = "ESCROW:ASSIGN"
 STATE_FILE   = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
 TRIGGER_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
 
@@ -530,31 +531,30 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
         return False
 
     msg = tx.get("attachment", {}).get("message", "")
-    if not msg.startswith(ESCROW_PREFIX):
+    if not msg.startswith(ESCROW_ASSIGN_PREFIX):
         return False
 
-    # Format: ESCROW:ASSIGN:v1:<escrow_id>:<task_hash>:<description>|TG:<token>~<chat_id>
-    # Legacy (no version): ESCROW:ASSIGN:<escrow_id>:<task_hash>:<description>
-    raw = msg[len(ESCROW_PREFIX):]
-    # Strip version prefix if present (v1:, v2:, etc.)
-    if raw[:2] == "v1" or (raw[0] == "v" and raw[1:2].isdigit() and raw[2:3] == ":"):
-        raw = raw[raw.index(":")+1:]
-    parts = raw.split(":", 2)  # escrow_id, task_hash, rest
-    escrow_id = parts[0] if len(parts) > 0 else "unknown"
-    task_hash = parts[1] if len(parts) > 1 else ""
-    rest      = parts[2] if len(parts) > 2 else ""
+    try:
+        parsed = parse_message(msg)
+    except Exception:
+        return False
+    if not isinstance(parsed, EscrowMessage) or parsed.action != "ASSIGN":
+        return False
 
-    if "|TG:" in rest:
-        desc_part, tg_part   = rest.rsplit("|TG:", 1)
-        task_description     = desc_part
+    escrow_id = parsed.escrow_id
+    task_hash = parsed.task_hash
+    raw_desc  = parsed.task_description
+
+    if "|TG:" in raw_desc:
+        task_description, tg_part = raw_desc.rsplit("|TG:", 1)
         if "~" in tg_part:
             payer_tg_token, payer_tg_chat = tg_part.split("~", 1)
         else:
             payer_tg_token, payer_tg_chat = "", ""
     else:
-        task_description = rest
-        payer_tg_token   = ""
-        payer_tg_chat    = ""
+        task_description  = raw_desc
+        payer_tg_token    = ""
+        payer_tg_chat     = ""
     sender           = tx.get("senderRS", tx.get("sender", "unknown"))
 
     task = {

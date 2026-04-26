@@ -37,6 +37,11 @@ from signum_api import get_api, signa, nqt, ts, FEE_MESSAGE, FEE_STANDARD, ok
 from wallet import get_my_address, send_signa, get_transactions
 from verify import hash_content, publish_proof
 from deploy_at import deploy_at as _at_deploy, submit_preimage as _at_submit, gen_preimage
+from protocol import (
+    build_escrow_create, build_escrow_fund, build_escrow_assign,
+    build_escrow_submit, build_escrow_release, build_escrow_refund,
+    parse_message, EscrowMessage,
+)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 ESCROW_PREFIX    = "ESCROW:"
@@ -273,7 +278,7 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
 
     # Step 2: Fund AT — money leaves payer's wallet into the AT contract
     print(f"  Funding AT {at_address} with {amount_signa} SIGNA...")
-    fund_message = f"{ESCROW_PREFIX}FUND:{escrow_id}"
+    fund_message = build_escrow_fund(escrow_id)
     fund_tx, err = send_signa(payer_passphrase, at_address, amount_signa,
                               message=fund_message, network=network)
     if err:
@@ -285,8 +290,8 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     # Step 3: Record escrow creation on-chain (payer → self audit record)
     print(f"  Recording escrow on-chain...")
     time.sleep(2)
-    message = (f"{ESCROW_PREFIX}CREATE:{escrow_id}:"
-               f"{worker_address}:{amount_nqt}:{task_hash}:{deadline_block}:{at_address}")
+    message = build_escrow_create(escrow_id, worker_address, amount_nqt,
+                                   task_hash, deadline_block, operator=at_address)
     record_result = api.post("sendMessage",
                              secretPhrase=payer_passphrase,
                              recipient=payer_address,
@@ -303,8 +308,8 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     payer_tg_token, payer_tg_chat = _read_telegram_config()
     task_desc_truncated = task_description[:750]
     tg_suffix = f"|TG:{payer_tg_token}~{payer_tg_chat}" if payer_tg_token else ""
-    notify_message = (f"{ESCROW_PREFIX}ASSIGN:v1:{escrow_id}:{task_hash}:"
-                      f"{task_desc_truncated}{tg_suffix}")
+    notify_message = build_escrow_assign(escrow_id, task_hash,
+                                          f"{task_desc_truncated}{tg_suffix}")
     api.post("sendMessage",
              secretPhrase=payer_passphrase,
              recipient=worker_address,
@@ -369,7 +374,7 @@ def submit_result(worker_passphrase, escrow_id, result_content,
     time.sleep(2)
 
     # Submit to escrow record via sendMessage — include proof TX for on-chain hash verification
-    message = f"{ESCROW_PREFIX}SUBMIT:{escrow_id}:{result_hash}:{proof['tx_id']}"
+    message = f"{build_escrow_submit(escrow_id, result_hash)}:{proof['tx_id']}"
     print(f"  Submitting result to escrow...")
     submit_result_tx = api.post("sendMessage",
                                 secretPhrase=worker_passphrase,
@@ -472,7 +477,7 @@ def release_payment(operator_passphrase, escrow_id, network=None):
         # Phase 1 fallback: direct payment (legacy escrows without AT)
         print(f"  No AT found for this escrow — using direct payment...")
         print(f"  Releasing {amount} SIGNA to {worker}...")
-        release_message = f"{ESCROW_PREFIX}RELEASE:{escrow_id}:{worker}"
+        release_message = build_escrow_release(escrow_id, worker)
         tx_id, err = send_signa(operator_passphrase, worker, amount,
                                 message=release_message, network=network)
         if err:
@@ -525,7 +530,7 @@ def refund_escrow(operator_passphrase, escrow_id, network=None):
         return None, "Could not determine payer address"
 
     print(f"  Refunding {amount} SIGNA to {payer}...")
-    refund_message = f"{ESCROW_PREFIX}REFUND:{escrow_id}:{payer}"
+    refund_message = build_escrow_refund(escrow_id, payer)
     tx_id, err = send_signa(operator_passphrase, payer, amount,
                             message=refund_message, network=network)
     if err:
@@ -613,32 +618,42 @@ def _parse_escrow_from_txs(escrow_id, transactions):
         if escrow_id not in msg:
             continue
 
-        parts = msg[len(ESCROW_PREFIX):].split(":")
-        action = parts[0] if parts else ""
+        try:
+            parsed = parse_message(msg)
+        except Exception:
+            continue
+        if not isinstance(parsed, EscrowMessage):
+            continue
+        if parsed.escrow_id != escrow_id:
+            continue
 
-        if action == "CREATE" and len(parts) >= 6:
-            # Always extract base data from CREATE regardless of rank
+        action = parsed.action
+
+        if action == "CREATE":
             escrow.update({
-                "payer": tx.get("senderRS"),
-                "worker": parts[2],
-                "amount_nqt": int(parts[3]) if parts[3].isdigit() else 0,
-                "amount_signa": int(parts[3]) / 100_000_000 if parts[3].isdigit() else 0,
-                "task_hash": parts[4],
-                "deadline_block": int(parts[5]) if parts[5].isdigit() else 0,
-                "at_address": parts[6] if len(parts) > 6 else "",
-                "create_tx": tx.get("transaction"),
-                "created_at": ts(tx.get("timestamp")),
+                "payer":          tx.get("senderRS"),
+                "worker":         parsed.worker,
+                "amount_nqt":     parsed.amount_nqt,
+                "amount_signa":   parsed.amount_nqt / 100_000_000,
+                "task_hash":      parsed.task_hash,
+                "deadline_block": parsed.deadline_block,
+                "at_address":     parsed.operator,
+                "create_tx":      tx.get("transaction"),
+                "created_at":     ts(tx.get("timestamp")),
             })
             if STATE_RANK[STATE_CREATED] > best_rank:
                 escrow["state"] = STATE_CREATED
                 best_rank = STATE_RANK[STATE_CREATED]
-        elif action == "SUBMIT" and len(parts) >= 3:
+        elif action == "SUBMIT":
             if STATE_RANK[STATE_SUBMITTED] > best_rank:
+                # proof_tx is appended after result_hash in our format
+                raw_parts = msg.split(":")
+                proof_tx = raw_parts[-1] if len(raw_parts) > 4 else ""
                 escrow.update({
-                    "state": STATE_SUBMITTED,
-                    "submitted_hash": parts[2],
-                    "proof_tx": parts[3] if len(parts) > 3 else "",
-                    "submit_tx": tx.get("transaction"),
+                    "state":        STATE_SUBMITTED,
+                    "submitted_hash": parsed.result_hash,
+                    "proof_tx":     proof_tx,
+                    "submit_tx":    tx.get("transaction"),
                     "submitted_at": ts(tx.get("timestamp")),
                     "submitted_by": tx.get("senderRS"),
                 })
@@ -646,16 +661,16 @@ def _parse_escrow_from_txs(escrow_id, transactions):
         elif action == "RELEASE":
             if STATE_RANK[STATE_RELEASED] > best_rank:
                 escrow.update({
-                    "state": STATE_RELEASED,
-                    "release_tx": tx.get("transaction"),
+                    "state":       STATE_RELEASED,
+                    "release_tx":  tx.get("transaction"),
                     "released_at": ts(tx.get("timestamp")),
                 })
                 best_rank = STATE_RANK[STATE_RELEASED]
         elif action == "REFUND":
             if STATE_RANK[STATE_REFUNDED] > best_rank:
                 escrow.update({
-                    "state": STATE_REFUNDED,
-                    "refund_tx": tx.get("transaction"),
+                    "state":       STATE_REFUNDED,
+                    "refund_tx":   tx.get("transaction"),
                     "refunded_at": ts(tx.get("timestamp")),
                 })
                 best_rank = STATE_RANK[STATE_REFUNDED]

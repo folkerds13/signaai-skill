@@ -7,6 +7,7 @@ import json
 import urllib.request
 import urllib.parse
 from datetime import datetime
+from decimal import Decimal
 
 # ── Constants ────────────────────────────────────────────────────────────────
 NQT = 100_000_000          # 1 SIGNA = 100,000,000 NQT (Nano-Quant)
@@ -83,8 +84,8 @@ def signa(nqt):
     return int(nqt) / NQT if nqt else 0
 
 def nqt(amount_signa):
-    """Convert SIGNA float to NQT int."""
-    return int(float(amount_signa) * NQT)
+    """Convert SIGNA to NQT int. Uses Decimal to avoid float precision errors."""
+    return int(Decimal(str(amount_signa)) * NQT)
 
 def ts(timestamp_signum):
     """Convert Signum genesis-relative timestamp to datetime string.
