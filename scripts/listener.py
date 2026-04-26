@@ -36,6 +36,7 @@ Force polling mode:
 
 import argparse
 import base64
+import fcntl
 import json
 import os
 import queue
@@ -49,12 +50,13 @@ import urllib.parse
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, ts, ok
+from signum_api import get_api, ts, ok, NODES, USER_AGENT
 from protocol import parse_message, EscrowMessage
 
 ESCROW_ASSIGN_PREFIX = "ESCROW:ASSIGN"
 STATE_FILE   = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
 TRIGGER_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
+TRIGGER_LOCK = TRIGGER_FILE + ".lock"
 
 # Single-worker task queue — processes one escrow at a time, no parallel races
 _task_queue = queue.Queue()
@@ -81,7 +83,7 @@ WS_PATH = "/events"
 
 POLL_INTERVAL    = 120   # seconds between fallback polls
 CONFIRM_POLL     = 30    # seconds between confirmation checks
-CONFIRM_TIMEOUT  = 600   # max seconds to wait for confirmation (10 min)
+CONFIRM_TIMEOUT  = 1200  # max seconds to wait for confirmation (20 min)
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -126,6 +128,43 @@ def save_pending(tasks):
     with open(tmp, "w") as f:
         json.dump(tasks, f, indent=2)
     os.replace(tmp, TRIGGER_FILE)
+
+def with_pending_lock(mutator):
+    """Run a pending-task mutation under a process-wide file lock."""
+    os.makedirs(os.path.dirname(TRIGGER_FILE), exist_ok=True)
+    with open(TRIGGER_LOCK, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            tasks = load_pending()
+            result = mutator(tasks)
+            save_pending(tasks)
+            return result
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+def claim_pending_task(task):
+    """Atomically claim a task so duplicate listeners/events cannot queue it."""
+    def mutate(tasks):
+        for existing in tasks:
+            same_tx = existing.get("tx_id") == task.get("tx_id")
+            same_escrow = existing.get("escrow_id") == task.get("escrow_id")
+            if same_tx or same_escrow:
+                return False, existing.get("status", "unknown")
+        tasks.append(task)
+        return True, "claimed"
+    return with_pending_lock(mutate)
+
+def update_pending_task(escrow_id, **updates):
+    """Atomically update the saved task record for an escrow."""
+    def mutate(tasks):
+        updated = False
+        for task in tasks:
+            if task.get("escrow_id") == escrow_id:
+                task.update(updates)
+                task["updated_at"] = datetime.now().isoformat()
+                updated = True
+        return updated
+    return with_pending_lock(mutate)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -370,17 +409,61 @@ def call_llm(task_description, api_key, provider="xai", model=None, base_url=Non
     return resp["choices"][0]["message"]["content"]
 
 
+def get_transaction_any_node(tx_id, network):
+    """
+    Fetch a transaction from the active API node, then fan out to peers if it is
+    still propagating. Public Signum nodes can briefly disagree on fresh TX IDs.
+    """
+    api = get_api(network)
+    result = api.get("getTransaction", transaction=str(tx_id))
+    active_node = getattr(api, "active_node", "?")
+    if ok(result) or "Unknown transaction" not in str(result.get("error", "")):
+        return result, active_node
+
+    params = urllib.parse.urlencode({
+        "requestType": "getTransaction",
+        "transaction": str(tx_id),
+    })
+    for node in NODES.get(network, []):
+        if node == active_node:
+            continue
+        try:
+            req = urllib.request.Request(
+                f"{node}/api?{params}",
+                headers={"User-Agent": USER_AGENT},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                peer_result = json.loads(resp.read())
+            if "errorDescription" in peer_result:
+                peer_result = {
+                    "error": peer_result["errorDescription"],
+                    "errorCode": peer_result.get("errorCode"),
+                }
+            if ok(peer_result):
+                return peer_result, node
+        except Exception:
+            continue
+    return result, active_node
+
+
 def wait_for_confirmation(tx_id, network):
     """Poll until TX has at least 1 confirmation. Returns True/False."""
-    api = get_api(network)
     deadline = time.time() + CONFIRM_TIMEOUT
     attempt = 0
     while time.time() < deadline:
-        result = api.get("getTransaction", transaction=str(tx_id))
-        if ok(result) and int(result.get("confirmations", 0)) >= 1:
-            return True
+        result, node = get_transaction_any_node(tx_id, network)
+        if ok(result):
+            confirmations = int(result.get("confirmations", 0) or 0)
+            if confirmations >= 1 or result.get("block") or result.get("height"):
+                log(f"  TX {tx_id} confirmed on {network} via {node} "
+                    f"(height={result.get('height', '?')}, confirmations={confirmations})")
+                return True
+            status = "seen in mempool"
+        else:
+            status = result.get("error", "unknown error")
         elapsed = attempt * CONFIRM_POLL
-        log(f"  Waiting for block confirmation... ({elapsed}s elapsed)")
+        log(f"  Waiting for block confirmation... ({elapsed}s elapsed, "
+            f"network={network}, node={node}, status={status})")
         time.sleep(CONFIRM_POLL)
         attempt += 1
     return False
@@ -394,7 +477,7 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
     No exec calls, no approval prompts, no hallucinated TX IDs.
     """
     from verify import hash_content, publish_proof, verify_proof
-    from escrow import submit_result
+    from escrow import submit_proof
 
     passphrase = worker_cfg["passphrase"]
     api_key    = worker_cfg["apiKey"]
@@ -404,9 +487,12 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
 
     log(f"[{escrow_id}] Autonomous execution starting")
     log(f"[{escrow_id}] Task: {task_description[:100]}...")
+    update_pending_task(escrow_id, status="in_progress", started_at=datetime.now().isoformat())
 
     def fail(reason):
         log(f"[{escrow_id}] FAILED: {reason}")
+        update_pending_task(escrow_id, status="failed", error=reason,
+                            failed_at=datetime.now().isoformat())
         send_telegram(tg_token, tg_chat_id,
                       f"❌ *SignaAI Task Failed*\nEscrow: `{escrow_id}`\n{reason}")
 
@@ -470,7 +556,8 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
     # Step 5: Submit to escrow
     try:
         log(f"[{escrow_id}] Submitting to escrow...")
-        submission, err = submit_result(passphrase, escrow_id, result, network=network)
+        submission, err = submit_proof(passphrase, escrow_id, result_hash, stamp_tx,
+                                       network=network)
         if err:
             raise Exception(err)
         submit_tx = submission["submit_tx"]
@@ -492,15 +579,9 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
         f"Release escrow {escrow_id}"
     ))
 
-    # Update pending tasks file
-    pending = load_pending()
-    for task in pending:
-        if task.get("escrow_id") == escrow_id:
-            task["status"] = "complete"
-            task["stamp_tx"] = stamp_tx
-            task["submit_tx"] = submit_tx
-            task["result_hash"] = result_hash
-    save_pending(pending)
+    update_pending_task(escrow_id, status="complete", stamp_tx=stamp_tx,
+                        submit_tx=submit_tx, result_hash=result_hash,
+                        completed_at=datetime.now().isoformat())
 
     log(f"[{escrow_id}] Complete ✓  stamp={stamp_tx}  submit={submit_tx}")
 
@@ -557,9 +638,10 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
         "status":           "pending",
     }
 
-    pending = load_pending()
-    pending.append(task)
-    save_pending(pending)
+    claimed, status = claim_pending_task(task)
+    if not claimed:
+        log(f"Duplicate task ignored — escrow {escrow_id} already {status} (TX {tx_id})")
+        return False
 
     log(f"New task — escrow {escrow_id} from {sender} (TX {tx_id})")
 

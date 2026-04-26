@@ -14,8 +14,8 @@ All state transitions are recorded as on-chain messages — fully auditable.
 AT holds funds trustlessly; once preimage is submitted, payment cannot be cancelled.
 
 On-chain message format:
-  ESCROW:CREATE:<escrow_id>:<worker>:<amount_nqt>:<result_hash>:<deadline_block>:<at_address>
-  ESCROW:SUBMIT:<escrow_id>:<result_hash>
+  ESCROW:CREATE:<escrow_id>:<worker>:<amount_nqt>:<task_hash>:<deadline_block>:<at_address>
+  ESCROW:SUBMIT:<escrow_id>:<result_hash>:<proof_tx>
   ESCROW:RELEASE:<escrow_id>:<worker>
   ESCROW:REFUND:<escrow_id>:<payer>
 
@@ -254,7 +254,12 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         _dedup_record(task_description, escrow_id)
         return onchain, None
 
-    amount_nqt = nqt(amount_signa)
+    try:
+        amount_nqt = nqt(amount_signa)
+    except ValueError as exc:
+        return None, str(exc)
+    if amount_nqt <= 0:
+        return None, "Amount must be greater than zero"
 
     # Generate preimage for AT — kept secret until release
     preimage, _ = gen_preimage()
@@ -367,8 +372,44 @@ def submit_result(worker_passphrase, escrow_id, result_content,
 
     time.sleep(2)
 
-    # Submit to escrow record via sendMessage — include proof TX for on-chain hash verification
-    message = f"{build_escrow_submit(escrow_id, result_hash)}:{proof['tx_id']}"
+    submission, err = submit_proof(
+        worker_passphrase, escrow_id, result_hash, proof["tx_id"], network=network
+    )
+    if err:
+        return None, err
+    submit_tx = submission["submit_tx"]
+
+    return {
+        "escrow_id": escrow_id,
+        "worker": worker_address,
+        "result_hash": result_hash,
+        "proof_tx": proof["tx_id"],
+        "submit_tx": submit_tx,
+        "state": STATE_SUBMITTED,
+    }, None
+
+
+def submit_proof(worker_passphrase, escrow_id, result_hash, proof_tx,
+                 network=None):
+    """
+    Submit an already-stamped result proof to escrow without stamping again.
+
+    The autonomous listener stamps and self-verifies first, then calls this so
+    a successful task produces one SIGPROOF and one ESCROW:SUBMIT.
+    """
+    if not worker_passphrase or not str(worker_passphrase).strip():
+        return None, "Worker passphrase cannot be empty"
+    if not result_hash:
+        return None, "result_hash is required"
+    if not proof_tx:
+        return None, "proof_tx is required"
+
+    api = get_api(network)
+    worker_address, err = get_my_address(worker_passphrase, network)
+    if err:
+        return None, err
+
+    message = build_escrow_submit(escrow_id, result_hash, proof_tx)
     print(f"  Submitting result to escrow...")
     submit_result_tx = api.post("sendMessage",
                                 secretPhrase=worker_passphrase,
@@ -378,14 +419,13 @@ def submit_result(worker_passphrase, escrow_id, result_content,
                                 feeNQT=FEE_MESSAGE)
     if not ok(submit_result_tx):
         return None, f"Failed to submit result: {submit_result_tx.get('error')}"
-    submit_tx = submit_result_tx.get("transaction")
 
     return {
         "escrow_id": escrow_id,
         "worker": worker_address,
         "result_hash": result_hash,
-        "proof_tx": proof["tx_id"],
-        "submit_tx": submit_tx,
+        "proof_tx": proof_tx,
+        "submit_tx": submit_result_tx.get("transaction"),
         "state": STATE_SUBMITTED,
     }, None
 
@@ -467,6 +507,7 @@ def release_payment(operator_passphrase, escrow_id, network=None):
             return None, f"AT release failed: {err}"
         tx_id = at_result["tx_id"]
         print(f"  Preimage submitted — AT will release {amount} SIGNA to worker on next block")
+        state = "PREIMAGE_SUBMITTED"
     else:
         # Phase 1 fallback: direct payment (legacy escrows without AT)
         print(f"  No AT found for this escrow — using direct payment...")
@@ -476,13 +517,13 @@ def release_payment(operator_passphrase, escrow_id, network=None):
                                 message=release_message, network=network)
         if err:
             return None, f"Release failed: {err}"
-
-    # Record locally — any future release call is blocked before hitting the network
-    _release_record(escrow_id, tx_id)
+        # Direct payment has actually moved funds, so dedup future releases.
+        _release_record(escrow_id, tx_id)
+        state = STATE_RELEASED
 
     return {
         "escrow_id":  escrow_id,
-        "state":      STATE_RELEASED,
+        "state":      state,
         "worker":     worker,
         "amount_signa": amount,
         "tx_id":      tx_id,
@@ -602,7 +643,7 @@ def _parse_escrow_from_txs(escrow_id, transactions):
     STATE_RANK = {STATE_CREATED: 0, STATE_SUBMITTED: 1,
                   STATE_RELEASED: 2, STATE_REFUNDED: 2}
 
-    escrow = {"escrow_id": escrow_id, "state": STATE_CREATED}
+    escrow = {"escrow_id": escrow_id, "state": "UNKNOWN"}
     best_rank = -1
 
     for tx in transactions:
@@ -640,13 +681,10 @@ def _parse_escrow_from_txs(escrow_id, transactions):
                 best_rank = STATE_RANK[STATE_CREATED]
         elif action == "SUBMIT":
             if STATE_RANK[STATE_SUBMITTED] > best_rank:
-                # proof_tx is appended after result_hash in our format
-                raw_parts = msg.split(":")
-                proof_tx = raw_parts[-1] if len(raw_parts) > 4 else ""
                 escrow.update({
                     "state":        STATE_SUBMITTED,
                     "submitted_hash": parsed.result_hash,
-                    "proof_tx":     proof_tx,
+                    "proof_tx":     parsed.proof_tx,
                     "submit_tx":    tx.get("transaction"),
                     "submitted_at": ts(tx.get("timestamp")),
                     "submitted_by": tx.get("senderRS"),

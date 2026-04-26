@@ -38,6 +38,12 @@ def send_signa(passphrase, recipient, amount_signa, message=None,
     Returns transaction ID on success.
     """
     api = get_api(network)
+    try:
+        amount_nqt = nqt(amount_signa)
+    except ValueError as exc:
+        return None, str(exc)
+    if amount_nqt <= 0:
+        return None, "Amount must be greater than zero"
 
     # Check if recipient is an AT (smart contract) — requires higher minimum fee
     acct = api.get("getAccount", account=recipient)
@@ -47,7 +53,7 @@ def send_signa(passphrase, recipient, amount_signa, message=None,
     params = {
         "secretPhrase": passphrase,
         "recipient": recipient,
-        "amountNQT": nqt(amount_signa),
+        "amountNQT": amount_nqt,
         "feeNQT": fee,
     }
 

@@ -44,6 +44,7 @@ class EscrowMessage:
     deadline_block: int = 0
     operator: str = ""
     result_hash: str = ""
+    proof_tx: str = ""
     participant: str = ""
     task_description: str = ""
 
@@ -140,8 +141,9 @@ def build_escrow_fund(escrow_id):
     return f"{ESCROW_PREFIX}FUND:{escrow_id}"
 
 
-def build_escrow_submit(escrow_id, result_hash):
-    return f"{ESCROW_PREFIX}SUBMIT:{escrow_id}:{result_hash}"
+def build_escrow_submit(escrow_id, result_hash, proof_tx=""):
+    msg = f"{ESCROW_PREFIX}SUBMIT:{escrow_id}:{result_hash}"
+    return f"{msg}:{proof_tx}" if proof_tx else msg
 
 
 def build_escrow_release(escrow_id, worker):
@@ -169,7 +171,7 @@ def build_escrow_message(msg):
     if action == "FUND":
         return build_escrow_fund(msg.escrow_id)
     if action == "SUBMIT":
-        return build_escrow_submit(msg.escrow_id, msg.result_hash)
+        return build_escrow_submit(msg.escrow_id, msg.result_hash, msg.proof_tx)
     if action == "RELEASE":
         return build_escrow_release(msg.escrow_id, msg.worker or msg.participant)
     if action == "REFUND":
@@ -219,6 +221,7 @@ def parse_escrow(message):
             escrow_id=escrow_id,
             version=version,
             result_hash=payload[1],
+            proof_tx=payload[2] if len(payload) > 2 else "",
         )
     if action == "RELEASE":
         return EscrowMessage(
