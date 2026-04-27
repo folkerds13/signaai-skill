@@ -340,9 +340,14 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     # Generate preimage for AT — kept secret until release
     preimage, _ = gen_preimage()
 
+    # Emit escrow ID immediately — Claude may time out during the 4-min AT wait,
+    # so print the ID before blocking so the agent can relay it to the user.
+    print(f"Escrow ID: {escrow_id}", flush=True)
+    print(f"(Deploying AT contract — takes ~4 minutes for block confirmation)", flush=True)
+
     # Step 1: Deploy AT contract — funds will be held trustlessly until release
     # AT auto-refunds to payer after deadline_block if worker never submits
-    print(f"  Deploying AT escrow contract (takes ~4 min for block confirmation)...")
+    print(f"  Deploying AT escrow contract (takes ~4 min for block confirmation)...", flush=True)
     at_result, err = _at_deploy(
         payer_passphrase, worker_address,
         deadline_block, preimage,
@@ -879,7 +884,7 @@ def main():
             receipt = _format_escrow_receipt(result, deadline_hours=args.deadline_hours)
             _store_last_receipt(receipt)
             print()
-            print(receipt)
+            print(receipt, flush=True)
 
     elif args.cmd == "submit":
         sources = [s.strip() for s in args.sources.split(",") if s.strip()]
