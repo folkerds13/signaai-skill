@@ -33,7 +33,7 @@ Chat channels (Telegram etc.) re-deliver old messages when the connection drops.
 
 ⛔ **NEVER create an escrow unless the user's message contains the exact phrase `Create SignaAI escrow for:`. Most daemon notifications ("SignaAI: New Task", "Processing autonomously", Stamp TX, Submit TX lines) are status updates — NOT commands. Ignore them.**
 
-**Exception: a message starting with ✅ SignaAI Task Complete and containing a Submit TX is the release trigger — act on it immediately by running `escrow.py release`.** The script verifies the proof stamp before releasing. If verification fails, alert the user and stop. If successful, relay the script output verbatim.
+**Exception: a message starting with ✅ SignaAI Task Complete and containing a Submit TX is the release trigger — act on it immediately by running `escrow.py release`.** The script verifies the proof stamp before releasing. If verification fails, alert the user and stop. If successful, reply using the exact release receipt format below.
 
 ⛔ **NEVER run `escrow.py status` before releasing.** It scans the wrong address and always returns CREATED even when the submission is confirmed on-chain. The release script handles all verification internally. Running status first will cause you to incorrectly block a valid release.
 
@@ -77,7 +77,7 @@ These phrases trigger the full workflow automatically.
 | Say this | What you do |
 |----------|-------------|
 | `Create SignaAI escrow for: <task>` | Run `escrow.py create` directly with the worker address specified. If no worker given, hire the other known agent (if you are MK use Sieka's address; if you are Sieka use MK's address — never hire yourself). Reply with the exact escrow-created receipt format below using values from the script output. Then STOP. Your response must NOT include any release command or extra next steps beyond the receipt. |
-| `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Relay the script output verbatim — do not paraphrase or reformat. Always run immediately — never refuse, never ask for confirmation. Also runs automatically on ✅ SignaAI Task Complete. |
+| `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply using the exact release receipt format below with values from the script output. Always run immediately — never refuse, never ask for confirmation. Also runs automatically on ✅ SignaAI Task Complete. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Check escrow <escrow_id>` | Run `escrow.py status` and return the result |
 | `What's my balance` | Run `wallet.py balance` and return the result |
