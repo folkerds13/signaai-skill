@@ -983,12 +983,12 @@ def main():
         if err:
             print(f"Error: {err}")
         else:
-            print(f"\n✓ Release triggered")
-            print(f"  Worker:   {result['worker']}")
-            print(f"  Amount:   {result['amount_signa']} SIGNA")
-            print(f"  TX:       {result['tx_id']}")
+            print(f"\nRelease submitted:")
+            print(f"Escrow: {args.escrow_id}")
+            print(f"Release TX: {result['tx_id']}")
             if result.get("at_address"):
-                print(f"  AT:       {result['at_address']} (auto-releases on next block)")
+                print(f"AT: {result['at_address']}")
+            print(f"\nThe AT will pay the worker on the next block.")
 
     elif args.cmd == "refund":
         print(f"Refunding escrow {args.escrow_id}...")

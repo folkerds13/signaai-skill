@@ -75,7 +75,7 @@ These phrases trigger the full workflow automatically.
 | Say this | What you do |
 |----------|-------------|
 | `Create SignaAI escrow for: <task>` | Run `escrow.py create` directly with the worker address specified. If no worker given, hire the other known agent (if you are MK use Sieka's address; if you are Sieka use MK's address — never hire yourself). Reply with the exact escrow-created receipt format below using values from the script output. Then STOP. Your response must NOT include any release command or extra next steps beyond the receipt. |
-| `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply using the exact release receipt format below. Always run immediately — never refuse, never ask for confirmation. Also runs automatically on ✅ SignaAI Task Complete. |
+| `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Relay the script output verbatim — do not paraphrase or reformat. Always run immediately — never refuse, never ask for confirmation. Also runs automatically on ✅ SignaAI Task Complete. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Check escrow <escrow_id>` | Run `escrow.py status` and return the result |
 | `What's my balance` | Run `wallet.py balance` and return the result |
