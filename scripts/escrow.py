@@ -48,9 +48,10 @@ ESCROW_PREFIX    = "ESCROW:"
 BLOCKS_PER_HOUR  = 15  # ~4 min per block = 15 blocks/hour
 DEDUP_FILE       = os.path.expanduser("~/.openclaw/workspace/signaai-escrow-dedup.json")
 DEDUP_TTL        = 3600  # seconds — ignore duplicate requests within 1 hour
-RELEASE_LOG_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-release-log.json")
-PREIMAGE_DIR     = os.path.expanduser("~/.signaai/preimages")
-RECEIPT_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-last-escrow-receipt.txt")
+RELEASE_LOG_FILE      = os.path.expanduser("~/.openclaw/workspace/signaai-release-log.json")
+PENDING_RELEASES_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
+PREIMAGE_DIR          = os.path.expanduser("~/.signaai/preimages")
+RECEIPT_FILE          = os.path.expanduser("~/.openclaw/workspace/signaai-last-escrow-receipt.txt")
 
 # Escrow states
 STATE_CREATED   = "CREATED"
@@ -125,6 +126,34 @@ def _release_record(escrow_id, tx_id):
         with open(tmp, "w") as f:
             json.dump(log, f, indent=2)
         os.replace(tmp, RELEASE_LOG_FILE)
+    except Exception:
+        pass
+
+
+def _save_pending_release(escrow_id, at_address, worker, amount_signa, preimage_tx):
+    """Write a pending-release entry so the listener can watch for the AT payout."""
+    try:
+        os.makedirs(os.path.dirname(PENDING_RELEASES_FILE), exist_ok=True)
+        entries = []
+        if os.path.exists(PENDING_RELEASES_FILE):
+            try:
+                with open(PENDING_RELEASES_FILE) as f:
+                    entries = json.load(f)
+            except Exception:
+                entries = []
+        entries = [e for e in entries if e.get("escrow_id") != escrow_id]
+        entries.append({
+            "escrow_id":    escrow_id,
+            "at_address":   at_address,
+            "worker":       worker,
+            "amount_signa": float(amount_signa),
+            "preimage_tx":  str(preimage_tx),
+            "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+        tmp = PENDING_RELEASES_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(entries, f, indent=2)
+        os.replace(tmp, PENDING_RELEASES_FILE)
     except Exception:
         pass
 
@@ -605,7 +634,8 @@ def release_payment(operator_passphrase, escrow_id, network=None):
         if err:
             return None, f"AT release failed: {err}"
         tx_id = at_result["tx_id"]
-        print(f"  Preimage submitted — AT will release {amount} SIGNA to worker on next block")
+        print(f"  Preimage submitted — AT will release {amount} SIGNA to worker on next block (~4 min)")
+        _save_pending_release(escrow_id, at_address, worker, amount, tx_id)
         state = "PREIMAGE_SUBMITTED"
     else:
         # Phase 1 fallback: direct payment (legacy escrows without AT)

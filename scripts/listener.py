@@ -56,11 +56,12 @@ from protocol import parse_message, EscrowMessage
 
 ESCROW_ASSIGN_PREFIX = "ESCROW:ASSIGN"
 ESCROW_RESULT_PREFIX = "ESCROW:RESULT:"
-STATE_FILE   = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
-TRIGGER_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
-TRIGGER_LOCK = TRIGGER_FILE + ".lock"
-RESULT_INBOX_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-result-inbox.json")
-RESULT_INBOX_LOCK = RESULT_INBOX_FILE + ".lock"
+STATE_FILE            = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
+TRIGGER_FILE          = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
+TRIGGER_LOCK          = TRIGGER_FILE + ".lock"
+RESULT_INBOX_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-result-inbox.json")
+RESULT_INBOX_LOCK     = RESULT_INBOX_FILE + ".lock"
+PENDING_RELEASES_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
 
 # Single-worker task queue — processes one escrow at a time, no parallel races
 _task_queue = queue.Queue()
@@ -430,6 +431,92 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
         mark_result_notified(escrow_id)
         log(f"[{escrow_id}] Payer notified with delivered result")
     return delivered
+
+# ── AT payout watcher ────────────────────────────────────────────────────────
+
+def _check_at_payout(entry, api):
+    """Return payout TX info if the AT has paid out to the worker, else None."""
+    at_address = entry.get("at_address", "")
+    worker     = entry.get("worker", "")
+    if not at_address or not worker:
+        return None
+
+    at_account = api.get("getAccount", account=at_address)
+    if not ok(at_account):
+        return None
+
+    bal_nqt = int(at_account.get("balanceNQT", 0) or 0)
+    if bal_nqt > 10_000_000:  # still holds > 0.1 SIGNA — not paid out yet
+        return None
+
+    # AT is drained — find payout TX in worker's recent incoming transactions
+    at_numeric  = str(at_account.get("account", ""))
+    worker_txs  = api.get("getAccountTransactions", account=worker,
+                          firstIndex=0, lastIndex=49)
+    if not ok(worker_txs):
+        return None
+
+    for tx in (worker_txs.get("transactions") or []):
+        sender_id = str(tx.get("sender", ""))
+        sender_rs = tx.get("senderRS", "")
+        if sender_id == at_numeric or sender_rs == at_address:
+            return {
+                "tx_id":      tx.get("transaction"),
+                "amount_nqt": int(tx.get("amountNQT", 0) or 0),
+                "height":     tx.get("height"),
+            }
+    return None
+
+
+def check_pending_releases(network, tg_token, tg_chat_id):
+    """
+    Check if any pending AT releases have paid out and notify the payer (MK).
+    Runs on every poll cycle and every new block.
+    """
+    if not os.path.exists(PENDING_RELEASES_FILE):
+        return
+
+    try:
+        with open(PENDING_RELEASES_FILE) as f:
+            entries = json.load(f)
+    except Exception:
+        return
+
+    if not entries:
+        return
+
+    api = get_api(network)
+    remaining = []
+
+    for entry in entries:
+        escrow_id = entry.get("escrow_id", "?")
+        payout = _check_at_payout(entry, api)
+
+        if payout is None:
+            remaining.append(entry)
+            continue
+
+        amount_signa = payout["amount_nqt"] / 100_000_000
+        release_tx   = payout.get("tx_id", "unknown")
+        worker       = entry.get("worker", "unknown")
+
+        log(f"[{escrow_id}] AT payout confirmed — {amount_signa:.4f} SIGNA → {worker}")
+
+        send_telegram(tg_token, tg_chat_id, (
+            f"✅ *Escrow Released*\n"
+            f"Escrow: `{escrow_id}`\n\n"
+            f"Worker received: `{amount_signa:.4f} SIGNA`\n"
+            f"Release TX: `{release_tx}`"
+        ), kind=f"release_confirmed:{escrow_id}")
+
+    try:
+        tmp = PENDING_RELEASES_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(remaining, f, indent=2)
+        os.replace(tmp, PENDING_RELEASES_FILE)
+    except Exception:
+        pass
+
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -1135,6 +1222,7 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
                 syncing = local < total
                 if not syncing:
                     log(f"Block {local} pushed")
+                    check_pending_releases(network, tg_token, tg_chat_id)
                 elif local % 10000 == 0:
                     pct = f"{local/total*100:.1f}%" if total else "?"
                     log(f"Syncing... {local}/{total} ({pct})")
@@ -1185,6 +1273,7 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
     save_state(state)
     if not found:
         log("No new tasks")
+    check_pending_releases(network, tg_token, tg_chat_id)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
