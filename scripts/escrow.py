@@ -416,7 +416,7 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
 
 
 def submit_result(worker_passphrase, escrow_id, result_content,
-                  sources=None, network=None):
+                  sources=None, recipient_address=None, network=None):
     """
     Worker submits completed task result on-chain.
 
@@ -449,7 +449,8 @@ def submit_result(worker_passphrase, escrow_id, result_content,
     time.sleep(2)
 
     submission, err = submit_proof(
-        worker_passphrase, escrow_id, result_hash, proof["tx_id"], network=network
+        worker_passphrase, escrow_id, result_hash, proof["tx_id"],
+        recipient_address=recipient_address, network=network
     )
     if err:
         return None, err
@@ -466,7 +467,7 @@ def submit_result(worker_passphrase, escrow_id, result_content,
 
 
 def submit_proof(worker_passphrase, escrow_id, result_hash, proof_tx,
-                 network=None):
+                 recipient_address=None, network=None):
     """
     Submit an already-stamped result proof to escrow without stamping again.
 
@@ -485,11 +486,15 @@ def submit_proof(worker_passphrase, escrow_id, result_hash, proof_tx,
     if err:
         return None, err
 
+    recipient_address = str(recipient_address or worker_address).strip()
+    if not recipient_address:
+        return None, "recipient_address cannot be empty"
+
     message = build_escrow_submit(escrow_id, result_hash, proof_tx)
     print(f"  Submitting result to escrow...")
     submit_result_tx = api.post("sendMessage",
                                 secretPhrase=worker_passphrase,
-                                recipient=worker_address,
+                                recipient=recipient_address,
                                 message=message,
                                 messageIsText="true",
                                 feeNQT=FEE_MESSAGE)
@@ -499,6 +504,7 @@ def submit_proof(worker_passphrase, escrow_id, result_hash, proof_tx,
     return {
         "escrow_id": escrow_id,
         "worker": worker_address,
+        "recipient": recipient_address,
         "result_hash": result_hash,
         "proof_tx": proof_tx,
         "submit_tx": submit_result_tx.get("transaction"),
@@ -835,6 +841,8 @@ def main():
     p.add_argument("escrow_id")
     p.add_argument("result_content")
     p.add_argument("--sources", default="")
+    p.add_argument("--recipient", default=None,
+                   help="Payer address to receive the ESCROW:SUBMIT marker")
 
     # release
     p = sub.add_parser("release", help="Release payment to worker")
@@ -878,7 +886,8 @@ def main():
         print(f"Submitting result for escrow {args.escrow_id}...")
         result, err = submit_result(
             args.worker_passphrase, args.escrow_id,
-            args.result_content, sources, args.network
+            args.result_content, sources,
+            recipient_address=args.recipient, network=args.network
         )
         if err:
             print(f"Error: {err}")

@@ -37,6 +37,7 @@ Force polling mode:
 import argparse
 import base64
 import fcntl
+import hashlib
 import json
 import os
 import queue
@@ -50,13 +51,16 @@ import urllib.parse
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, ts, ok, NODES, USER_AGENT
+from signum_api import get_api, ts, ok, NODES, USER_AGENT, FEE_MESSAGE
 from protocol import parse_message, EscrowMessage
 
 ESCROW_ASSIGN_PREFIX = "ESCROW:ASSIGN"
+ESCROW_RESULT_PREFIX = "ESCROW:RESULT:"
 STATE_FILE   = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
 TRIGGER_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
 TRIGGER_LOCK = TRIGGER_FILE + ".lock"
+RESULT_INBOX_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-result-inbox.json")
+RESULT_INBOX_LOCK = RESULT_INBOX_FILE + ".lock"
 
 # Single-worker task queue — processes one escrow at a time, no parallel races
 _task_queue = queue.Queue()
@@ -84,6 +88,7 @@ WS_PATH = "/events"
 POLL_INTERVAL    = 120   # seconds between fallback polls
 CONFIRM_POLL     = 30    # seconds between confirmation checks
 CONFIRM_TIMEOUT  = 1200  # max seconds to wait for confirmation (20 min)
+RESULT_CHUNK_BYTES = 600  # stays under Signum's practical message-size limit
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -246,6 +251,186 @@ def startup_retry_candidates(address, network):
         save_pending(tasks)
     return retries
 
+
+# ── Result delivery helpers ──────────────────────────────────────────────────
+
+def load_result_inbox():
+    if os.path.exists(RESULT_INBOX_FILE):
+        try:
+            with open(RESULT_INBOX_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {"escrows": {}}
+    return {"escrows": {}}
+
+def save_result_inbox(inbox):
+    os.makedirs(os.path.dirname(RESULT_INBOX_FILE), exist_ok=True)
+    tmp = RESULT_INBOX_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(inbox, f, indent=2)
+    os.replace(tmp, RESULT_INBOX_FILE)
+
+def with_result_inbox_lock(mutator):
+    os.makedirs(os.path.dirname(RESULT_INBOX_FILE), exist_ok=True)
+    with open(RESULT_INBOX_LOCK, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            inbox = load_result_inbox()
+            result = mutator(inbox)
+            save_result_inbox(inbox)
+            return result
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+def _result_record(inbox, escrow_id):
+    escrows = inbox.setdefault("escrows", {})
+    return escrows.setdefault(escrow_id, {
+        "escrow_id": escrow_id,
+        "chunks": {},
+        "notified": False,
+    })
+
+def result_chunks(result_text):
+    data = result_text.encode("utf-8")
+    chunks = [data[i:i + RESULT_CHUNK_BYTES]
+              for i in range(0, len(data), RESULT_CHUNK_BYTES)]
+    return chunks or [b""]
+
+def build_result_chunk_message(escrow_id, index, total, chunk):
+    payload = base64.urlsafe_b64encode(chunk).decode("ascii").rstrip("=")
+    return f"{ESCROW_RESULT_PREFIX}{escrow_id}:{index}:{total}:{payload}"
+
+def parse_result_chunk_message(message):
+    parts = message.split(":", 5)
+    if len(parts) != 6 or parts[0] != "ESCROW" or parts[1] != "RESULT":
+        raise ValueError("not an ESCROW:RESULT message")
+    escrow_id = parts[2]
+    index = int(parts[3])
+    total = int(parts[4])
+    payload = parts[5]
+    if index < 1 or total < 1 or index > total:
+        raise ValueError("invalid result chunk index")
+    padding = "=" * (-len(payload) % 4)
+    chunk = base64.urlsafe_b64decode((payload + padding).encode("ascii"))
+    return escrow_id, index, total, chunk
+
+def publish_result_chunks(passphrase, recipient, escrow_id, result_text, network):
+    """Deliver the result text to the payer account as chunked on-chain messages."""
+    api = get_api(network)
+    tx_ids = []
+    chunks = result_chunks(result_text)
+    total = len(chunks)
+
+    for index, chunk in enumerate(chunks, start=1):
+        message = build_result_chunk_message(escrow_id, index, total, chunk)
+        sent = api.post("sendMessage",
+                        secretPhrase=passphrase,
+                        recipient=recipient,
+                        message=message,
+                        messageIsText="true",
+                        feeNQT=FEE_MESSAGE)
+        if not ok(sent):
+            return tx_ids, sent.get("error", "Failed to send result chunk")
+        tx_ids.append(sent.get("transaction"))
+        time.sleep(1)
+
+    return tx_ids, None
+
+def update_result_submit(escrow_id, submit_tx, result_hash, proof_tx, sender):
+    now_iso = datetime.now().isoformat()
+
+    def mutate(inbox):
+        record = _result_record(inbox, escrow_id)
+        record.update({
+            "submit_tx": str(submit_tx),
+            "result_hash": result_hash,
+            "proof_tx": str(proof_tx),
+            "worker": sender,
+            "updated_at": now_iso,
+        })
+        return record.copy()
+
+    return with_result_inbox_lock(mutate)
+
+def update_result_chunk(escrow_id, index, total, chunk, tx_id, sender):
+    now_iso = datetime.now().isoformat()
+    encoded = base64.urlsafe_b64encode(chunk).decode("ascii").rstrip("=")
+
+    def mutate(inbox):
+        record = _result_record(inbox, escrow_id)
+        record["total_chunks"] = total
+        record.setdefault("chunks", {})[str(index)] = encoded
+        record.setdefault("chunk_txs", {})[str(index)] = str(tx_id)
+        record["worker"] = sender
+        record["updated_at"] = now_iso
+        return record.copy()
+
+    return with_result_inbox_lock(mutate)
+
+def mark_result_notified(escrow_id):
+    def mutate(inbox):
+        record = _result_record(inbox, escrow_id)
+        if record.get("notified"):
+            return False
+        record["notified"] = True
+        record["notified_at"] = datetime.now().isoformat()
+        return True
+
+    return with_result_inbox_lock(mutate)
+
+def assemble_result(record):
+    total = int(record.get("total_chunks") or 0)
+    chunks = record.get("chunks") or {}
+    if total < 1 or len(chunks) < total:
+        return None
+
+    data = b""
+    for index in range(1, total + 1):
+        payload = chunks.get(str(index))
+        if payload is None:
+            return None
+        padding = "=" * (-len(payload) % 4)
+        data += base64.urlsafe_b64decode((payload + padding).encode("ascii"))
+    return data.decode("utf-8")
+
+def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
+    record = load_result_inbox().get("escrows", {}).get(escrow_id, {})
+    if record.get("notified") or not record.get("submit_tx"):
+        return False
+
+    result_text = assemble_result(record)
+    if result_text is None:
+        return False
+
+    computed_hash = hashlib.sha256(result_text.encode("utf-8")).hexdigest()
+    expected_hash = str(record.get("result_hash", ""))
+    hash_ok = computed_hash == expected_hash
+
+    proof_ok = False
+    try:
+        from verify import verify_proof
+        proof_ok, _details = verify_proof(result_text, record.get("proof_tx"), network=network)
+    except Exception as e:
+        log(f"[{escrow_id}] Proof verification error before payer notify: {e}")
+
+    status_line = "verified" if hash_ok and proof_ok else "verification failed"
+    result_preview = result_text[:3000] + "..." if len(result_text) > 3000 else result_text
+    delivered = send_telegram(tg_token, tg_chat_id, (
+        f"✅ *SignaAI Task Complete*\n"
+        f"Escrow: `{escrow_id}`\n\n"
+        f"*Research Result:*\n{result_preview}\n\n"
+        f"Stamp TX: `{record.get('proof_tx')}`\n"
+        f"Submit TX: `{record.get('submit_tx')}`\n"
+        f"Result hash: `{status_line}`\n\n"
+        f"To release payment, send:\n"
+        f"Release escrow {escrow_id}"
+    ), kind=f"payer_task_complete:{escrow_id}")
+
+    if delivered:
+        mark_result_notified(escrow_id)
+        log(f"[{escrow_id}] Payer notified with delivered result")
+    return delivered
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def load_openclaw_config():
@@ -371,23 +556,35 @@ def load_worker_config():
 def send_telegram(token, chat_id, message, kind="message"):
     if not token or not chat_id:
         return False
-    try:
+    def post(parse_mode):
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        data = urllib.parse.urlencode({
+        payload = {
             "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown"
-        }).encode()
+            "text": message
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        data = urllib.parse.urlencode(payload).encode()
         response = urllib.request.urlopen(
             urllib.request.Request(url, data=data), timeout=10
         )
-        payload = json.loads(response.read().decode("utf-8"))
+        return json.loads(response.read().decode("utf-8"))
+
+    try:
+        payload = post("Markdown")
         message_id = payload.get("result", {}).get("message_id", "?")
         log(f"Telegram sent ({kind}) message_id={message_id}")
         return True
     except Exception as e:
-        log(f"Telegram send failed ({kind}): {e}")
-        return False
+        log(f"Telegram Markdown send failed ({kind}): {e}; retrying plain text")
+        try:
+            payload = post(None)
+            message_id = payload.get("result", {}).get("message_id", "?")
+            log(f"Telegram sent ({kind}) message_id={message_id} plain_text=true")
+            return True
+        except Exception as plain_error:
+            log(f"Telegram send failed ({kind}): {plain_error}")
+            return False
 
 
 # ── Hooks fallback (OpenClaw agent trigger) ───────────────────────────────────
@@ -645,34 +842,56 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
         fail(f"Self-verify failed: {e}")
         return
 
-    # Step 5: Submit to escrow
+    # Step 5: Deliver result text to the payer's account as chunked messages.
+    # The payer-side listener reassembles these chunks and notifies MK locally.
+    result_chunk_txs = []
+    try:
+        log(f"[{escrow_id}] Delivering result chunks to payer {sender}...")
+        result_chunk_txs, err = publish_result_chunks(passphrase, sender, escrow_id,
+                                                      result, network)
+        if err:
+            raise Exception(err)
+        log(f"[{escrow_id}] Result chunks sent: {', '.join(map(str, result_chunk_txs))}")
+    except Exception as e:
+        update_pending_task(escrow_id, status="result_delivery_failed",
+                            stamp_tx=stamp_tx,
+                            result_hash=result_hash, error=str(e),
+                            failed_at=datetime.now().isoformat())
+        send_telegram(tg_token, tg_chat_id,
+                      f"⚠️ *SignaAI Result Delivery Failed*\n"
+                      f"Escrow: `{escrow_id}`\n"
+                      f"Stamp TX: `{stamp_tx}`\n"
+                      f"{e}",
+                      kind=f"result_delivery_failed:{escrow_id}")
+        return
+
+    # Step 6: Submit to escrow. Send the marker to the payer so their listener
+    # can detect completion without relying on the worker's local Telegram.
     try:
         log(f"[{escrow_id}] Submitting to escrow...")
         submission, err = submit_proof(passphrase, escrow_id, result_hash, stamp_tx,
-                                       network=network)
+                                       recipient_address=sender, network=network)
         if err:
             raise Exception(err)
         submit_tx = submission["submit_tx"]
         log(f"[{escrow_id}] Submit TX: {submit_tx}")
     except Exception as e:
-        fail(f"Submit failed: {e}")
+        fail(f"Submit failed after result delivery: {e}")
         return
 
-    # Step 6: Notify payer with result + TX IDs
-    # Truncate result to fit Telegram's 4096 char limit (leave room for header)
-    result_preview = result[:3000] + "..." if len(result) > 3000 else result
+    # Step 7: Local worker receipt only. The full result goes to the payer-side
+    # listener so the agent that created the escrow gets the completion message.
     send_telegram(tg_token, tg_chat_id, (
-        f"✅ *SignaAI Task Complete*\n"
+        f"✅ *SignaAI Task Submitted*\n"
         f"Escrow: `{escrow_id}`\n\n"
-        f"*Research Result:*\n{result_preview}\n\n"
+        f"Result delivered to payer: `{sender}`\n"
         f"Stamp TX: `{stamp_tx}`\n"
-        f"Submit TX: `{submit_tx}`\n\n"
-        f"To release payment, send:\n"
-        f"Release escrow {escrow_id}"
-    ), kind=f"task_complete:{escrow_id}")
+        f"Submit TX: `{submit_tx}`"
+    ), kind=f"task_submitted:{escrow_id}")
 
     update_pending_task(escrow_id, status="complete", stamp_tx=stamp_tx,
                         submit_tx=submit_tx, result_hash=result_hash,
+                        result_chunk_txs=result_chunk_txs,
                         completed_at=datetime.now().isoformat())
 
     log(f"[{escrow_id}] Complete ✓  stamp={stamp_tx}  submit={submit_tx}")
@@ -684,9 +903,12 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
                        hook_token=None, hook_path="/hooks", gw_port=18789,
                        worker_cfg=None):
     """
-    Check if a transaction is an ESCROW:ASSIGN destined for our address.
-    If worker config is present, execute autonomously. Otherwise trigger agent.
-    Returns True if a new task was recorded.
+    Handle SignaAI messages destined for our address.
+
+    - ESCROW:ASSIGN: worker-side task execution
+    - ESCROW:SUBMIT / ESCROW:RESULT: payer-side completion inbox
+
+    Returns True if a relevant message was recorded.
     """
     tx_id = str(tx.get("transaction", tx.get("id", "")))
     if not tx_id:
@@ -704,20 +926,41 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
         return False
 
     msg = tx.get("attachment", {}).get("message", "")
-    if not msg.startswith(ESCROW_ASSIGN_PREFIX):
-        return False
+    sender = tx.get("senderRS", tx.get("sender", "unknown"))
+
+    if msg.startswith(ESCROW_RESULT_PREFIX):
+        try:
+            escrow_id, index, total, chunk = parse_result_chunk_message(msg)
+        except Exception as e:
+            log(f"Malformed result chunk in TX {tx_id}: {e}")
+            return False
+        update_result_chunk(escrow_id, index, total, chunk, tx_id, sender)
+        log(f"Result chunk {index}/{total} received for escrow {escrow_id} (TX {tx_id})")
+        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network)
+        return True
 
     try:
         parsed = parse_message(msg)
     except Exception:
         return False
-    if not isinstance(parsed, EscrowMessage) or parsed.action != "ASSIGN":
+    if not isinstance(parsed, EscrowMessage):
+        return False
+
+    if parsed.action == "SUBMIT":
+        escrow_id = parsed.escrow_id
+        update_result_submit(escrow_id, tx_id, parsed.result_hash,
+                             parsed.proof_tx, sender)
+        log(f"Escrow submission received — escrow {escrow_id} from {sender} "
+            f"(proof {parsed.proof_tx}, TX {tx_id})")
+        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network)
+        return True
+
+    if parsed.action != "ASSIGN":
         return False
 
     escrow_id        = parsed.escrow_id
     task_hash        = parsed.task_hash
     task_description = parsed.task_description
-    sender           = tx.get("senderRS", tx.get("sender", "unknown"))
 
     task = {
         "escrow_id":        escrow_id,
