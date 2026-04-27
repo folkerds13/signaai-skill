@@ -368,9 +368,9 @@ def load_worker_config():
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
-def send_telegram(token, chat_id, message):
+def send_telegram(token, chat_id, message, kind="message"):
     if not token or not chat_id:
-        return
+        return False
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = urllib.parse.urlencode({
@@ -378,9 +378,16 @@ def send_telegram(token, chat_id, message):
             "text": message,
             "parse_mode": "Markdown"
         }).encode()
-        urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10)
+        response = urllib.request.urlopen(
+            urllib.request.Request(url, data=data), timeout=10
+        )
+        payload = json.loads(response.read().decode("utf-8"))
+        message_id = payload.get("result", {}).get("message_id", "?")
+        log(f"Telegram sent ({kind}) message_id={message_id}")
+        return True
     except Exception as e:
-        log(f"Telegram send failed: {e}")
+        log(f"Telegram send failed ({kind}): {e}")
+        return False
 
 
 # ── Hooks fallback (OpenClaw agent trigger) ───────────────────────────────────
@@ -574,7 +581,8 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
         update_pending_task(escrow_id, status="failed", error=reason,
                             failed_at=datetime.now().isoformat())
         send_telegram(tg_token, tg_chat_id,
-                      f"❌ *SignaAI Task Failed*\nEscrow: `{escrow_id}`\n{reason}")
+                      f"❌ *SignaAI Task Failed*\nEscrow: `{escrow_id}`\n{reason}",
+                      kind=f"task_failed:{escrow_id}")
 
     # Step 0: Confirm the assignment TX is on-chain before doing any work
     # Prevents executing tasks from dropped or orphaned transactions
@@ -657,7 +665,7 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
         f"Submit TX: `{submit_tx}`\n\n"
         f"To release payment, send:\n"
         f"Release escrow {escrow_id}"
-    ))
+    ), kind=f"task_complete:{escrow_id}")
 
     update_pending_task(escrow_id, status="complete", stamp_tx=stamp_tx,
                         submit_tx=submit_tx, result_hash=result_hash,
@@ -725,12 +733,15 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
 
     log(f"New task — escrow {escrow_id} from {sender} (TX {tx_id})")
 
-    send_telegram(tg_token, tg_chat_id, (
+    new_task_notified = send_telegram(tg_token, tg_chat_id, (
         f"*SignaAI: New Task*\n"
         f"Escrow: `{escrow_id}`\n"
         f"From: `{sender}`\n\n"
         f"{'Processing autonomously...' if worker_cfg and task_description else 'Triggering agent...'}"
-    ))
+    ), kind=f"new_task:{escrow_id}")
+    if new_task_notified:
+        update_pending_task(escrow_id, notified_at=datetime.now().isoformat())
+        time.sleep(2)
 
     if worker_cfg and task_description:
         # Queue task for sequential processing — one at a time, no parallel races
