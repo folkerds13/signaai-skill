@@ -99,7 +99,13 @@ Fund TX: <fund_tx>
 Task sent to worker (<amount_signa> SIGNA, <deadline_hours>h deadline). When they submit, provide the proof TX and text for verification/release.
 ```
 
-Do not report `UNKNOWN` as the final result after create. If the script output is unclear, check the payer's recent on-chain transactions for the matching `ESCROW:CREATE`, `ESCROW:FUND`, and `ESCROW:ASSIGN` records before responding. Never create a second escrow just to recover missing display details.
+Do not report `UNKNOWN` as the final result after create. If the script output is unclear, first read `/Users/mkfolkerds/.openclaw/workspace/signaai-last-escrow-receipt.txt`. If that file is missing or stale, recover the receipt from chain with:
+
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet receipt <escrow_id> --address <payer_address>
+```
+
+Never create a second escrow just to recover missing display details.
 
 ---
 

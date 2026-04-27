@@ -50,6 +50,7 @@ DEDUP_FILE       = os.path.expanduser("~/.openclaw/workspace/signaai-escrow-dedu
 DEDUP_TTL        = 3600  # seconds — ignore duplicate requests within 1 hour
 RELEASE_LOG_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-release-log.json")
 PREIMAGE_DIR     = os.path.expanduser("~/.signaai/preimages")
+RECEIPT_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-last-escrow-receipt.txt")
 
 # Escrow states
 STATE_CREATED   = "CREATED"
@@ -124,6 +125,40 @@ def _release_record(escrow_id, tx_id):
         with open(tmp, "w") as f:
             json.dump(log, f, indent=2)
         os.replace(tmp, RELEASE_LOG_FILE)
+    except Exception:
+        pass
+
+def _format_escrow_receipt(escrow, deadline_hours=None):
+    """Return the canonical receipt shown to the payer after escrow creation."""
+    amount = escrow.get("amount_signa", 0)
+    amount_text = f"{float(amount):g}"
+
+    if deadline_hours is None:
+        create_height = int(escrow.get("create_height") or escrow.get("current_block") or 0)
+        deadline_block = int(escrow.get("deadline_block") or 0)
+        if create_height and deadline_block > create_height:
+            deadline_hours = round((deadline_block - create_height) / BLOCKS_PER_HOUR)
+        else:
+            deadline_hours = 24
+    deadline_text = f"{float(deadline_hours):g}"
+
+    return (
+        "Escrow created:\n"
+        f"ID: {escrow['escrow_id']}\n"
+        f"Record TX: {escrow.get('record_tx') or escrow.get('create_tx')}\n"
+        f"Fund TX: {escrow.get('fund_tx')}\n\n"
+        f"Task sent to worker ({amount_text} SIGNA, {deadline_text}h deadline). "
+        "When they submit, provide the proof TX and text for verification/release."
+    )
+
+def _store_last_receipt(receipt):
+    """Persist the last create receipt so OpenClaw can recover it if stdout is lost."""
+    try:
+        os.makedirs(os.path.dirname(RECEIPT_FILE), exist_ok=True)
+        tmp = RECEIPT_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(receipt.rstrip() + "\n")
+        os.replace(tmp, RECEIPT_FILE)
     except Exception:
         pass
 
@@ -735,11 +770,18 @@ def _parse_escrow_from_txs(escrow_id, transactions):
                 "deadline_block": parsed.deadline_block,
                 "at_address":     parsed.operator,
                 "create_tx":      tx.get("transaction"),
+                "record_tx":      tx.get("transaction"),
+                "create_height":  tx.get("height"),
                 "created_at":     ts(tx.get("timestamp")),
             })
             if STATE_RANK[STATE_CREATED] > best_rank:
                 escrow["state"] = STATE_CREATED
                 best_rank = STATE_RANK[STATE_CREATED]
+        elif action == "FUND":
+            escrow.update({
+                "fund_tx":   tx.get("transaction"),
+                "funded_at": ts(tx.get("timestamp")),
+            })
         elif action == "SUBMIT":
             if STATE_RANK[STATE_SUBMITTED] > best_rank:
                 escrow.update({
@@ -809,6 +851,11 @@ def main():
     p.add_argument("escrow_id")
     p.add_argument("--address", default=None)
 
+    # receipt
+    p = sub.add_parser("receipt", help="Print canonical escrow creation receipt")
+    p.add_argument("escrow_id")
+    p.add_argument("--address", required=True, help="Payer address to scan")
+
     args = parser.parse_args()
     os.environ["SIGNUM_NETWORK"] = args.network
 
@@ -821,19 +868,10 @@ def main():
         if err:
             print(f"Error: {err}")
         else:
-            amount_text = f"{float(result.get('amount_signa', args.amount)):g}"
-            deadline_text = f"{args.deadline_hours:g}"
+            receipt = _format_escrow_receipt(result, deadline_hours=args.deadline_hours)
+            _store_last_receipt(receipt)
             print()
-            print("Escrow created:")
-            print(f"ID: {result['escrow_id']}")
-            print(f"Record TX: {result['record_tx']}")
-            print(f"Fund TX: {result['fund_tx']}")
-            print()
-            print(
-                f"Task sent to worker ({amount_text} SIGNA, "
-                f"{deadline_text}h deadline). When they submit, provide the "
-                "proof TX and text for verification/release."
-            )
+            print(receipt)
 
     elif args.cmd == "submit":
         sources = [s.strip() for s in args.sources.split(",") if s.strip()]
@@ -894,6 +932,18 @@ def main():
             for k, v in result.items():
                 if k not in ("escrow_id", "state") and v:
                     print(f"  {k:<20} {v}")
+    elif args.cmd == "receipt":
+        result, err = get_escrow_status(args.escrow_id, args.address, args.network)
+        if err:
+            print(f"Error: {err}")
+        elif result.get("state") == "UNKNOWN":
+            print(f"Error: escrow {args.escrow_id} not found for {args.address}")
+        elif not result.get("fund_tx"):
+            print(f"Error: fund TX not found for escrow {args.escrow_id}")
+        else:
+            receipt = _format_escrow_receipt(result)
+            _store_last_receipt(receipt)
+            print(receipt)
     else:
         parser.print_help()
 
