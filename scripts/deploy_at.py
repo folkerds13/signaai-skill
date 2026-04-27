@@ -27,21 +27,29 @@ sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, signa, nqt, FEE_STANDARD, FEE_MESSAGE, ok
 from wallet import get_my_address, send_signa
 
-# ── AT Bytecode (compiled from SignaAIEscrow.java via SmartJ) ─────────────────
+# ── AT Bytecode (compiled from contracts/signaai_escrow.smart via smartc-signum-compiler 2.3.0) ──
+# Source: contracts/signaai_escrow.smart
+# Compiled with: #pragma maxAuxVars 1, #include APIFunctions
+# Memory layout (positions 0-7 initialized by build_data_field):
+#   [0] r0 (SmartC scratch, always 0)
+#   [1] _counterTimestamp (getNextTx internal tracker, always 0)
+#   [2] workerAddress
+#   [3] deadlineBlock
+#   [4] h1  [5] h2  [6] h3  [7] h4  (SHA256(preimage) split into 4 longs)
 AT_CODE_HEX = (
-    "320b033504011100000012fb0000003033040307000000350001080000001e08000000072835070307000000"
-    "320a033504010a0000003506030900000012470000001a1000000033100108000000320903322301331601"
-    "000000003317010100000033180102000000331901030000003505020b000000100b000000110b0000001e"
-    "0b0000000b1a9700000033160104000000320304133500030b000000100b000000110c000000030d000000"
-    "200c000000060000000f040d000000100d000000110b0000001e0b0000000b1afa0000003500040b000000"
-    "100b0000001011000000110b000000110c0000003316010b0000003302040c000000133500030b000000"
-    "100b000000110b0000003706040d0000000b00000005000000100d000000110600000013"
+    "30030000000033170100000000320b033504010e000000330403010000003500010d0000001b0d0000000d"
+    "350703010000001e0d0000000b1ae400000003000000003414010d00000000000000320903350401090000"
+    "003505010a0000003506010b0000003507010c000000331001090000003311010a0000003312010b000000"
+    "3313010c000000320402331001040000003311010500000033120106000000331301070000003527010f00"
+    "00001b0f000000113316010200000032030428330403010000003500010d0000001e0d0000000b1a320000"
+    "00350703010000001a320000003500031000000001000000002000000000000000181000000000000000201"
+    "000000003000000153316010e000000320304282a1a17000000"
 )
 AT_CODE_HEX = AT_CODE_HEX.replace("\n", "").replace(" ", "")
 
 AT_DPAGES   = 1
-AT_CSPAGES  = 1
-AT_USPAGES  = 1
+AT_CSPAGES  = 0
+AT_USPAGES  = 0
 AT_MIN_ACTIVATION_NQT = 100_000_000  # 1 SIGNA
 
 
@@ -66,17 +74,19 @@ def build_data_field(preimage_hex, worker_account_id, deadline_block):
     """
     Build the AT data initialization field.
 
-    Contract variable order (matches signaai_escrow.smart):
-      [0] workerAddress  — worker account ID (numeric)
-      [1] deadlineBlock  — absolute block height for refund cutoff
-      [2-5] h1..h4       — SHA256(preimage) as 4 x 64-bit little-endian longs
+    Memory layout (must match SmartC compiled output — maxAuxVars 1):
+      [0] r0 = 0               — SmartC scratch register
+      [1] _counterTimestamp=0  — getNextTx() internal tracker (0 = start from genesis)
+      [2] workerAddress        — worker account ID (numeric)
+      [3] deadlineBlock        — absolute block height for refund cutoff
+      [4-7] h1..h4             — SHA256(preimage) as 4 x 64-bit little-endian longs
 
     Returns hex string for the 'data' parameter in createATProgram.
     """
+    prefix = encode_long_le(0) + encode_long_le(0)  # r0, _counterTimestamp
     worker_encoded   = encode_long_le(worker_account_id)
     deadline_encoded = encode_long_le(deadline_block)
 
-    # SHA256 the preimage → 32 bytes = 4 x 8-byte longs
     hash_bytes = hashlib.sha256(bytes.fromhex(preimage_hex)).digest()
     hash_parts = []
     for i in range(4):
@@ -84,7 +94,7 @@ def build_data_field(preimage_hex, worker_account_id, deadline_block):
         val = struct.unpack('<q', chunk)[0]
         hash_parts.append(encode_long_le(val))
 
-    return worker_encoded + deadline_encoded + "".join(hash_parts)
+    return prefix + worker_encoded + deadline_encoded + "".join(hash_parts)
 
 
 def encode_preimage_message(preimage_hex):

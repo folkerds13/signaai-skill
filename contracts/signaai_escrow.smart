@@ -4,65 +4,54 @@
  * Hash-preimage escrow for AI agent task payments.
  *
  * Flow:
- *   1. Payer deploys this contract with:
- *        - SHA256(preimage) stored as h1..h4
- *        - Worker's account ID stored as workerAddress
- *        - Deadline block stored as deadlineBlock
- *   2. Payer funds the contract (sends SIGNA to its address)
- *   3. Worker completes task, payer reveals preimage
- *   4. Worker sends preimage as a 32-byte message to this contract
- *   5. Contract verifies SHA256(preimage) == stored hash → pays worker
- *   6. If deadline passes without valid preimage → refunds payer
+ *   1. Payer deploys this contract — data[] initialized with:
+ *        [0] r0 = 0               (SmartC scratch, always zero)
+ *        [1] _counterTimestamp=0  (getNextTx internal, always zero)
+ *        [2] workerAddress        (worker numeric account ID)
+ *        [3] deadlineBlock        (absolute block height for refund cutoff)
+ *        [4-7] h1..h4             (SHA256(preimage) split into 4 x int64 longs)
+ *   2. Payer funds the contract (sends SIGNA to AT address)
+ *   3. Worker completes task, payer verifies, then:
+ *   4. Payer sends preimage as 32-byte hex message to AT (with >= 1 SIGNA activation)
+ *   5. Contract verifies SHA256(preimage) == stored hash → pays worker entire balance
+ *   6. If deadline block passes without correct preimage → refunds payer
  *
- * Deploy via: createATProgram API with hex bytecode from this file
- * Initialize data[]: [workerAddress, deadlineBlock, h1, h2, h3, h4]
+ * Compile:  smartc-signum-compiler v2.3.0, #pragma maxAuxVars 1, #include APIFunctions
+ * Deploy:   createATProgram API, data= from build_data_field() in deploy_at.py
  */
 
 #program name SignaAIEscrow
 #program description SignaAI agent task escrow - hash preimage release or deadline refund
 #program activationAmount 100000000
+#pragma maxAuxVars 1
+#include APIFunctions
 
-// --- Contract Variables (initialized at deploy time via data[]) ---
-// Worker agent account ID (numeric, not RS format)
 long workerAddress;
-
-// Block height after which payer can reclaim funds
 long deadlineBlock;
-
-// SHA256(preimage) stored as 4 x 64-bit longs (256 bits total)
 long h1, h2, h3, h4;
 
-// --- Main Logic ---
-void main(void) {
-    long txid;
-    long payer;
-    payer = getCreator();
+long msg[4];
+long txId;
+long payer;
+long checkResult;
+long currentHeight;
 
+void main(void) {
+    payer = getCreator();
     while (true) {
 
         // Process all incoming transactions
-        while ((txid = getNextTx()) != 0) {
+        txId = getNextTx();
+        while (txId != 0) {
 
-            // Load preimage from transaction message into A register
-            // (worker sends 32-byte preimage as unencrypted message)
-            Set_A1(txid);
-            Set_A2(0);
-            Set_A3(0);
-            Set_A4(0);
-            Message_From_Tx_In_A_To_B();
+            // Read 32-byte preimage from TX message into msg[0..3]
+            readShortMessage(txId, msg, 4);
 
-            // A = message (preimage candidate from worker)
-            // Copy B (message) to A so we can SHA256 it
-            long b1 = Get_B1();
-            long b2 = Get_B2();
-            long b3 = Get_B3();
-            long b4 = Get_B4();
-            Set_A1(b1);
-            Set_A2(b2);
-            Set_A3(b3);
-            Set_A4(b4);
-
-            // SHA256(preimage) → result lands in B
+            // SHA256(preimage) → result in B registers
+            Set_A1(msg[0]);
+            Set_A2(msg[1]);
+            Set_A3(msg[2]);
+            Set_A4(msg[3]);
             SHA256_A_To_B();
 
             // Load stored hash into A for comparison
@@ -71,16 +60,20 @@ void main(void) {
             Set_A3(h3);
             Set_A4(h4);
 
-            // Check: stored_hash (A) == SHA256(preimage) (B)
-            if (Check_A_Equals_B()) {
-                // Correct preimage — pay the worker
+            // If stored_hash (A) == SHA256(preimage) (B) → pay worker
+            checkResult = Check_A_Equals_B();
+            if (checkResult != 0) {
                 sendBalance(workerAddress);
                 return;
             }
+
+            txId = getNextTx();
         }
 
-        // Check deadline — if passed, refund payer
-        if (getBlockHeight() >= deadlineBlock) {
+        // If deadline block passed → refund payer
+        // getCurrentBlockheight() extracts high 32 bits from block timestamp
+        currentHeight = getCurrentBlockheight();
+        if (currentHeight >= deadlineBlock) {
             sendBalance(payer);
             return;
         }
