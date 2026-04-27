@@ -34,7 +34,7 @@ ALIAS_PREFIX = ""
 
 
 def register_agent(passphrase, agent_name, capabilities=None, version="1.0",
-                   description="", network=None):
+                   description="", registry=None, network=None):
     """
     Register an AI agent identity on Signum.
     Uses the alias system to map a human-readable name to an address.
@@ -78,7 +78,7 @@ def register_agent(passphrase, agent_name, capabilities=None, version="1.0",
     announce_msg = f"{AGENT_ANNOUNCE_PREFIX}{alias}:{address}"
     api.post("sendMessage",
              secretPhrase=passphrase,
-             recipient=REGISTRY_ADDRESS,
+             recipient=_registry_address(registry),
              message=announce_msg,
              messageIsText="true",
              feeNQT=FEE_MESSAGE)
@@ -290,19 +290,25 @@ def record_task_completion(passphrase, task_id, result_hash, rating=5, network=N
 
 
 # Open registry — any agent can join by sending a registration announcement.
-# The registry address is the public bulletin board for agent discovery.
-REGISTRY_ADDRESS = "S-PS4K-2KE2-8LEV-HD2YE"
+# Set SIGNAAI_REGISTRY env var or pass registry= to register_agent()/list_agents()
+# to use your own registry address. Defaults to the SignaAI mainnet registry.
+DEFAULT_REGISTRY_ADDRESS = "S-PS4K-2KE2-8LEV-HD2YE"
 AGENT_ANNOUNCE_PREFIX = "AGENT:v1:register:"
 
 
-def list_agents(network=None):
+def _registry_address(override=None):
+    import os
+    return override or os.environ.get("SIGNAAI_REGISTRY") or DEFAULT_REGISTRY_ADDRESS
+
+
+def list_agents(registry=None, network=None):
     """
     List all registered SignaAI agents from the open registry.
     Any agent that called register_agent() is discoverable here.
     """
     api = get_api(network)
     result = api.get("getAccountTransactions",
-                     account=REGISTRY_ADDRESS,
+                     account=_registry_address(registry),
                      firstIndex=0,
                      lastIndex=499)
 
@@ -344,12 +350,12 @@ def list_agents(network=None):
     return list(agents.values())
 
 
-def search_agents(capability=None, network=None):
+def search_agents(capability=None, registry=None, network=None):
     """
     Search the agent marketplace by capability (case-insensitive substring match).
     Returns all registered agents if no capability filter given.
     """
-    agents = list_agents(network=network)
+    agents = list_agents(registry=registry, network=network)
     if not capability:
         return agents
     cap_lower = capability.lower()

@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, signa, nqt, ts, FEE_MESSAGE, FEE_STANDARD, ok
 from wallet import get_my_address, send_signa, get_transactions
 from verify import hash_content, publish_proof
-from deploy_at import deploy_at as _at_deploy, submit_preimage as _at_submit, gen_preimage
+from _deploy_at import deploy_at as _at_deploy, submit_preimage as _at_submit, gen_preimage
 from protocol import (
     build_escrow_create, build_escrow_fund, build_escrow_assign,
     build_escrow_submit, build_escrow_release, build_escrow_refund,
