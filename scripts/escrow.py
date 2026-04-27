@@ -159,6 +159,47 @@ def _load_preimage(escrow_id):
         pass
     return {}
 
+def _find_at_payout(api, at_address, worker_address, limit=99):
+    """Return an AT payout transaction to the worker, if one is visible."""
+    if not at_address or not worker_address:
+        return None
+
+    at_account = api.get("getAccount", account=at_address)
+    at_numeric = str(at_account.get("account", ""))
+
+    worker_txs = api.get("getAccountTransactions",
+                         account=worker_address,
+                         firstIndex=0,
+                         lastIndex=limit)
+    for tx in (worker_txs.get("transactions") or []):
+        sender_rs = tx.get("senderRS", "")
+        sender_id = str(tx.get("sender", ""))
+        amount_nqt = int(tx.get("amountNQT") or 0)
+        if amount_nqt <= 0:
+            continue
+        if sender_rs == at_address or (at_numeric and sender_id == at_numeric):
+            return {
+                "tx_id": tx.get("transaction"),
+                "amount_nqt": amount_nqt,
+                "height": tx.get("height"),
+            }
+    return None
+
+def _find_at_preimage_submission(api, at_address, sender_address, preimage, limit=99):
+    """Return a previous preimage submission TX to the AT, if one is visible."""
+    if not at_address or not sender_address or not preimage:
+        return None
+
+    sender_txs = api.get("getAccountTransactions",
+                         account=sender_address,
+                         firstIndex=0,
+                         lastIndex=limit)
+    for tx in (sender_txs.get("transactions") or []):
+        msg = tx.get("attachment", {}).get("message", "")
+        if tx.get("recipientRS") == at_address and msg == preimage:
+            return tx.get("transaction")
+    return None
+
 
 def _check_onchain_escrow(escrow_id, address, network):
     """Return existing escrow dict if this escrow_id already exists on-chain. None if new."""
@@ -456,6 +497,29 @@ def release_payment(operator_passphrase, escrow_id, network=None):
     if err:
         return None, err
 
+    worker = escrow_data.get("worker")
+    amount = escrow_data.get("amount_signa", 0)
+
+    if not worker:
+        return None, "Could not determine worker address from escrow record"
+
+    preimage_data = _load_preimage(escrow_id)
+    preimage   = preimage_data.get("preimage")
+    at_address = escrow_data.get("at_address") or preimage_data.get("at_address")
+
+    if at_address:
+        payout = _find_at_payout(api, at_address, worker)
+        if payout:
+            _release_record(escrow_id, payout["tx_id"])  # backfill local log
+            return None, f"Escrow already released by AT - TX: {payout['tx_id']}. Nothing to do."
+
+        pending_release_tx = _find_at_preimage_submission(
+            api, at_address, operator_address, preimage
+        )
+        if pending_release_tx:
+            return None, (f"AT release already submitted - TX: {pending_release_tx}. "
+                          "Waiting for AT payout.")
+
     if escrow_data["state"] == STATE_RELEASED:
         release_tx = escrow_data.get("release_tx", "unknown")
         _release_record(escrow_id, release_tx)  # backfill local log
@@ -466,12 +530,6 @@ def release_payment(operator_passphrase, escrow_id, network=None):
 
     if escrow_data["state"] != STATE_SUBMITTED:
         return None, f"Escrow not in SUBMITTED state (current: {escrow_data['state']})"
-
-    worker = escrow_data.get("worker")
-    amount = escrow_data.get("amount_signa", 0)
-
-    if not worker:
-        return None, "Could not determine worker address from escrow record"
 
     # Verify proof TX hash matches submitted hash — no full text needed
     submitted_hash = escrow_data.get("submitted_hash", "")
@@ -492,11 +550,6 @@ def release_payment(operator_passphrase, escrow_id, network=None):
             print(f"  Hash verified ✓")
         else:
             print(f"  Warning: could not fetch proof TX {proof_tx_id} — skipping hash check")
-
-    # Check for AT-based release (Phase 2 — funds held in AT contract)
-    preimage_data = _load_preimage(escrow_id)
-    preimage   = preimage_data.get("preimage")
-    at_address = preimage_data.get("at_address")
 
     if preimage and at_address:
         # AT release: submit preimage → AT verifies hash → auto-releases to worker
@@ -617,6 +670,14 @@ def get_escrow_status(escrow_id, address=None, network=None):
             escrow.update({k: v for k, v in escrow2.items()
                            if k not in ("payer", "worker", "amount_nqt", "amount_signa",
                                         "task_hash", "deadline_block", "create_tx", "created_at")})
+
+    if escrow.get("at_address") and escrow.get("worker") and escrow.get("state") in (STATE_CREATED, STATE_SUBMITTED):
+        payout = _find_at_payout(api, escrow["at_address"], escrow["worker"])
+        if payout:
+            escrow["state"] = STATE_RELEASED
+            escrow["release_tx"] = payout["tx_id"]
+            escrow["released_amount_nqt"] = payout["amount_nqt"]
+            escrow["released_at_height"] = payout["height"]
 
     return escrow, err
 
