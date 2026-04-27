@@ -166,6 +166,86 @@ def update_pending_task(escrow_id, **updates):
         return updated
     return with_pending_lock(mutate)
 
+def chain_has_worker_submission(escrow_id, address, network):
+    """Return the worker's existing ESCROW:SUBMIT tx, if one is already on-chain."""
+    api = get_api(network)
+    result = api.get("getAccountTransactions",
+                     account=address,
+                     firstIndex=0,
+                     lastIndex=199)
+    if not ok(result):
+        log(f"Startup retry check failed for {escrow_id}: {result.get('error', 'unknown error')}")
+        return None
+
+    for tx in (result.get("transactions") or []):
+        msg = tx.get("attachment", {}).get("message", "")
+        try:
+            parsed = parse_message(msg)
+        except Exception:
+            continue
+        if not isinstance(parsed, EscrowMessage):
+            continue
+        if parsed.escrow_id == escrow_id and parsed.action == "SUBMIT":
+            return tx.get("transaction")
+    return None
+
+def startup_retry_candidates(address, network):
+    """
+    Return stale pending/in_progress tasks that still need work.
+
+    This path runs before the daemon starts watching new transactions, so it
+    must do its own dedup and chain reconciliation instead of blindly re-queueing
+    every saved pending row.
+    """
+    tasks = load_pending()
+    seen = set()
+    retries = []
+    changed = False
+    now_iso = datetime.now().isoformat()
+
+    for task in tasks:
+        status = task.get("status")
+        if status not in ("pending", "in_progress"):
+            continue
+
+        escrow_id = task.get("escrow_id", "")
+        task_desc = task.get("task_description", "")
+        if not escrow_id or not task_desc:
+            task["status"] = "skipped_invalid"
+            task["skipped_at"] = now_iso
+            changed = True
+            continue
+
+        if escrow_id in seen:
+            task["status"] = "skipped_duplicate"
+            task["skipped_at"] = now_iso
+            changed = True
+            continue
+        seen.add(escrow_id)
+
+        saved_submit_tx = str(task.get("submit_tx", "")).strip()
+        if saved_submit_tx:
+            task["status"] = "chain_submitted"
+            task["updated_at"] = now_iso
+            changed = True
+            log(f"Startup retry skipped {escrow_id}: saved submit TX exists ({saved_submit_tx})")
+            continue
+
+        submit_tx = chain_has_worker_submission(escrow_id, address, network)
+        if submit_tx:
+            task["status"] = "chain_submitted"
+            task["submit_tx"] = submit_tx
+            task["updated_at"] = now_iso
+            changed = True
+            log(f"Startup retry skipped {escrow_id}: already submitted on-chain ({submit_tx})")
+            continue
+
+        retries.append(task)
+
+    if changed:
+        save_pending(tasks)
+    return retries
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def load_openclaw_config():
@@ -893,8 +973,7 @@ def main():
 
     # On startup: re-queue any tasks that were pending when the daemon last stopped
     if worker_cfg:
-        pending = load_pending()
-        retries = [t for t in pending if t.get("status") == "pending"]
+        retries = startup_retry_candidates(args.address, args.network)
         if retries:
             log(f"Retrying {len(retries)} pending task(s) from previous session...")
             for task in retries:
