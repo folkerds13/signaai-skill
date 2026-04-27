@@ -192,6 +192,40 @@ def _store_last_receipt(receipt):
         pass
 
 
+def _load_tg_config():
+    """Read Telegram bot token and chat ID from OpenClaw config."""
+    try:
+        cfg_path = os.path.expanduser("~/.openclaw/openclaw.json")
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        tg = cfg.get("channels", {}).get("telegram", {})
+        token = tg.get("botToken", "") or None
+        approvers = tg.get("execApprovals", {}).get("approvers", [])
+        chat_id = approvers[0] if approvers else None
+        return token, chat_id
+    except Exception:
+        return None, None
+
+
+def _send_telegram(token, chat_id, message):
+    """Send a Telegram message. Silently no-ops if not configured."""
+    if not token or not chat_id:
+        return
+    import urllib.request, urllib.parse
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        data = urllib.parse.urlencode(payload).encode()
+        urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10)
+    except Exception:
+        try:
+            payload = {"chat_id": chat_id, "text": message}
+            data = urllib.parse.urlencode(payload).encode()
+            urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10)
+        except Exception:
+            pass
+
+
 def _store_preimage(escrow_id, preimage, at_address, deploy_tx):
     """Store preimage in a per-escrow file with 0o600 permissions. Never goes on-chain."""
     try:
@@ -913,6 +947,14 @@ def main():
         else:
             receipt = _format_escrow_receipt(result, deadline_hours=args.deadline_hours)
             _store_last_receipt(receipt)
+            tg_token, tg_chat_id = _load_tg_config()
+            _send_telegram(tg_token, tg_chat_id,
+                           f"🔐 *Escrow Created*\n"
+                           f"ID: `{result['escrow_id']}`\n"
+                           f"Record TX: `{result.get('record_tx') or result.get('create_tx')}`\n"
+                           f"Fund TX: `{result.get('fund_tx')}`\n\n"
+                           f"Task sent to worker ({float(args.amount):g} SIGNA, "
+                           f"{float(args.deadline_hours):g}h deadline).")
             print()
             print(receipt, flush=True)
 
