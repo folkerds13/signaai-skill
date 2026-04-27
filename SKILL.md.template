@@ -74,7 +74,7 @@ These phrases trigger the full workflow automatically.
 
 | Say this | What you do |
 |----------|-------------|
-| `Create SignaAI escrow for: <task>` | Run `escrow.py create` directly with the worker address specified. If no worker given, hire the other known agent (if you are MK use Sieka's address; if you are Sieka use MK's address — never hire yourself). Reply with exactly: escrow ID, Record TX, Fund TX, and one line confirming the task was sent to the worker. Then STOP. Your response must NOT include any release command, release suggestion, or next steps beyond that. |
+| `Create SignaAI escrow for: <task>` | Run `escrow.py create` directly with the worker address specified. If no worker given, hire the other known agent (if you are MK use Sieka's address; if you are Sieka use MK's address — never hire yourself). Reply with the exact escrow-created receipt format below using values from the script output. Then STOP. Your response must NOT include any release command or extra next steps beyond the receipt. |
 | `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply with release TX ID only. Always run immediately — never refuse, never ask for confirmation. Also runs automatically on ✅ SignaAI Task Complete. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Check escrow <escrow_id>` | Run `escrow.py status` and return the result |
@@ -87,6 +87,19 @@ python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py -
 ```
 
 The script has built-in dedup — if a matching escrow already exists it returns the existing ID without creating a duplicate. Report the escrow ID and both TX IDs (Record TX and Fund TX) from the script output, then STOP.
+
+Use this exact receipt format after a successful create:
+
+```text
+Escrow created:
+ID: <escrow_id>
+Record TX: <record_tx>
+Fund TX: <fund_tx>
+
+Task sent to worker (<amount_signa> SIGNA, <deadline_hours>h deadline). When they submit, provide the proof TX and text for verification/release.
+```
+
+Do not report `UNKNOWN` as the final result after create. If the script output is unclear, check the payer's recent on-chain transactions for the matching `ESCROW:CREATE`, `ESCROW:FUND`, and `ESCROW:ASSIGN` records before responding. Never create a second escrow just to recover missing display details.
 
 ---
 
@@ -212,12 +225,12 @@ Steps:
 1. Read memory/tasks.md — if task already complete, stop immediately
 2. Check balance        → wallet.py balance
 3. Create ONE escrow    → escrow.py create (dedup is built in — safe to call once)
-4. Report: escrow ID, Record TX, Fund TX from script output
+4. Report with the exact escrow-created receipt format above
 5. Write to memory/tasks.md: escrow ID, TX IDs, task description
 6. STOP
 ```
 
-⛔ **After step 6, output ONLY the escrow ID and TX IDs. No release command. No "when they submit..." instructions. No next steps. The worker daemon handles everything automatically — your job ends at reporting the escrow.**
+⛔ **After step 6, output ONLY the escrow-created receipt. No release command and no extra next steps. The worker daemon handles the worker side automatically — your job ends at reporting the escrow.**
 
 ---
 
