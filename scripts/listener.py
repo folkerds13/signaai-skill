@@ -43,6 +43,7 @@ import os
 import queue
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -62,6 +63,7 @@ TRIGGER_LOCK          = TRIGGER_FILE + ".lock"
 RESULT_INBOX_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-result-inbox.json")
 RESULT_INBOX_LOCK     = RESULT_INBOX_FILE + ".lock"
 PENDING_RELEASES_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
+LISTENER_LOCK_DIR     = os.path.expanduser("~/.openclaw/workspace")
 
 # Single-worker task queue — processes one escrow at a time, no parallel races
 _task_queue = queue.Queue()
@@ -90,6 +92,7 @@ POLL_INTERVAL    = 120   # seconds between fallback polls
 CONFIRM_POLL     = 30    # seconds between confirmation checks
 CONFIRM_TIMEOUT  = 1200  # max seconds to wait for confirmation (20 min)
 RESULT_CHUNK_BYTES = 600  # stays under Signum's practical message-size limit
+_listener_lock_handle = None
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -99,6 +102,46 @@ def now():
 
 def log(msg):
     print(f"[{now()}] {msg}", flush=True)
+
+def git_commit():
+    """Return the checked-out git commit for startup diagnostics."""
+    skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        return subprocess.check_output(
+            ["git", "-C", skill_dir, "rev-parse", "--short", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+def acquire_listener_lock(network):
+    """
+    Hold an exclusive per-network lock for the listener process lifetime.
+
+    This prevents a launchd daemon and a manual foreground listener from both
+    processing the same escrow stream and writing contradictory log lines.
+    """
+    global _listener_lock_handle
+    os.makedirs(LISTENER_LOCK_DIR, exist_ok=True)
+    lock_path = os.path.join(LISTENER_LOCK_DIR, f"signaai-listener-{network}.lock")
+    lock = open(lock_path, "a+")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.seek(0)
+        existing = lock.read().strip() or "unknown pid"
+        print(f"Another SignaAI listener is already running for {network}: {existing}", flush=True)
+        print("Stop the existing listener before starting a foreground copy.", flush=True)
+        sys.exit(2)
+
+    lock.seek(0)
+    lock.truncate()
+    lock.write(f"pid={os.getpid()} script={os.path.abspath(__file__)} commit={git_commit()}\n")
+    lock.flush()
+    _listener_lock_handle = lock
+    return lock_path
 
 
 # ── State / trigger file helpers ──────────────────────────────────────────────
@@ -1287,6 +1330,8 @@ def main():
     parser.add_argument("--no-websocket",  action="store_true", help="Force polling mode")
     args = parser.parse_args()
 
+    lock_path = acquire_listener_lock(args.network)
+
     tg_token, tg_chat_id, hook_token, hook_path, gw_port = load_openclaw_config()
     worker_cfg = load_worker_config()
 
@@ -1301,9 +1346,14 @@ def main():
         args.address = addr
 
     print(f"SignaAI Listener starting", flush=True)
+    print(f"  PID:         {os.getpid()}", flush=True)
+    print(f"  Script:      {os.path.abspath(__file__)}", flush=True)
+    print(f"  Commit:      {git_commit()}", flush=True)
     print(f"  Address:     {args.address}", flush=True)
     print(f"  Network:     {args.network}", flush=True)
+    print(f"  Lock:        {lock_path}", flush=True)
     print(f"  Tasks:       {TRIGGER_FILE}", flush=True)
+    print(f"  Confirm wait:{CONFIRM_TIMEOUT}s ({CONFIRM_POLL}s poll)", flush=True)
     print(f"  Telegram:    {'enabled' if tg_token else 'disabled'}", flush=True)
     if worker_cfg:
         print(f"  Mode:        AUTONOMOUS — payer + worker (any agent can be either)", flush=True)

@@ -80,6 +80,10 @@ These phrases trigger the full workflow automatically.
 | `Check escrow <escrow_id>` | Run `escrow.py status` and return the result |
 | `What's my balance` | Run `wallet.py balance` and return the result |
 
+### Listener safety
+
+The SignaAI listener is normally managed by launchd as `io.signaai.listener`. Do not run `run.sh` or a foreground `listener.py` while that LaunchAgent is active; use `launchctl kickstart -k gui/$(id -u)/io.signaai.listener` to restart it. The listener has a single-instance lock and will refuse a second copy.
+
 ### How to create an escrow
 
 ```bash
