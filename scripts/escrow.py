@@ -696,7 +696,7 @@ def get_escrow_status(escrow_id, address=None, network=None):
     result = api.get("getAccountTransactions",
                      account=address,
                      firstIndex=0,
-                     lastIndex=999)
+                     lastIndex=99)
 
     txs = result.get("transactions", [])
     escrow, err = _parse_escrow_from_txs(escrow_id, txs)
@@ -708,7 +708,7 @@ def get_escrow_status(escrow_id, address=None, network=None):
         worker_result = api.get("getAccountTransactions",
                                 account=worker,
                                 firstIndex=0,
-                                lastIndex=999)
+                                lastIndex=99)
         worker_txs = worker_result.get("transactions", [])
         escrow2, _ = _parse_escrow_from_txs(escrow_id, worker_txs)
         # Merge — keep base data from first scan, take higher state from worker scan
