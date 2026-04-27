@@ -6,19 +6,19 @@ Deploys the SignaAIEscrow AT smart contract to Signum.
 The AT holds funds trustlessly — no operator, no trust required.
 
 Usage:
-  python3 deploy_at.py gen-preimage
-  python3 deploy_at.py deploy <payer_passphrase> <worker_address> <deadline_block> <preimage_hex>
-  python3 deploy_at.py submit <payer_passphrase> <at_address> <preimage_hex>
-  python3 deploy_at.py info <at_address>
+  python3 _deploy_at.py gen-preimage
+  python3 _deploy_at.py deploy <payer_passphrase> <worker_address> <deadline_block> <preimage_hex>
+  python3 _deploy_at.py submit <payer_passphrase> <at_address> <preimage_hex>
+  python3 _deploy_at.py info <at_address>
 
 Workflow:
-  1. Generate a preimage:    python3 deploy_at.py gen-preimage
-  2. Get current block:      python3 deploy_at.py --network mainnet info <any_at>  (or check explorer)
-  3. Deploy the escrow AT:   python3 deploy_at.py deploy "<passphrase>" <worker> <deadline_block> <preimage_hex>
+  1. Generate a preimage:    python3 _deploy_at.py gen-preimage
+  2. Get current block:      python3 _deploy_at.py --network mainnet info <any_at>  (or check explorer)
+  3. Deploy the escrow AT:   python3 _deploy_at.py deploy "<passphrase>" <worker> <deadline_block> <preimage_hex>
                              deadline_block is an absolute block height, e.g. current_block + 360 (~24h)
   4. Fund the AT:            send SIGNA to the AT address (escrow.py does this automatically)
   5. Worker completes task, payer verifies work
-  6. Payer submits preimage: python3 deploy_at.py submit "<payer_passphrase>" <at_address> <preimage_hex>
+  6. Payer submits preimage: python3 _deploy_at.py submit "<payer_passphrase>" <at_address> <preimage_hex>
                              This sends 1 SIGNA activation + preimage to the AT
   7. AT verifies SHA256(preimage) == stored hash → auto-releases entire balance to worker
   8. If deadline passes without correct preimage → AT auto-refunds payer

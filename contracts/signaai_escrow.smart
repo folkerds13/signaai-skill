@@ -17,7 +17,7 @@
  *   6. If deadline block passes without correct preimage → refunds payer
  *
  * Compile:  smartc-signum-compiler v2.3.0, #pragma maxAuxVars 1, #include APIFunctions
- * Deploy:   createATProgram API, data= from build_data_field() in deploy_at.py
+ * Deploy:   createATProgram API, data= from build_data_field() in scripts/_deploy_at.py
  */
 
 #program name SignaAIEscrow
