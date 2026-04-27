@@ -541,11 +541,15 @@ def wait_for_confirmation(tx_id, network):
         result, node = get_transaction_any_node(tx_id, network)
         if ok(result):
             confirmations = int(result.get("confirmations", 0) or 0)
-            if confirmations >= 1 or result.get("block") or result.get("height"):
+            height = int(result.get("height", 2147483647) or 2147483647)
+            if confirmations >= 1:
                 log(f"  TX {tx_id} confirmed on {network} via {node} "
-                    f"(height={result.get('height', '?')}, confirmations={confirmations})")
+                    f"(height={height}, confirmations={confirmations})")
                 return True
-            status = "seen in mempool"
+            if height == 2147483647:
+                status = "seen in mempool"
+            else:
+                status = f"mined at height {height}, waiting for confirmation"
         else:
             status = result.get("error", "unknown error")
         elapsed = attempt * CONFIRM_POLL
