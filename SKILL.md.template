@@ -277,11 +277,11 @@ Steps:
 
 Steps:
 ```
-1. Check escrow status  → escrow.py status
-2. Verify worker proof  → verify.py verify
-3. Release payment      → escrow.py release
-4. Update memory/tasks.md as complete
+1. Release payment      → escrow.py release  (script verifies proof internally)
+2. Update memory/tasks.md as complete
 ```
+
+⛔ Do NOT run `escrow.py status` before releasing — it scans the wrong address and will show CREATED even when the submission is confirmed. The release script handles verification internally.
 
 ---
 
