@@ -821,19 +821,19 @@ def main():
         if err:
             print(f"Error: {err}")
         else:
-            print(f"\n✓ Escrow created (AT-backed)")
-            print(f"  Escrow ID:    {result['escrow_id']}")
-            print(f"  AT address:   {result['at_address']}")
-            print(f"  Payer:        {result['payer']}")
-            print(f"  Worker:       {result['worker']}")
-            print(f"  Amount:       {result['amount_signa']} SIGNA (held in AT)")
-            print(f"  Task hash:    {result['task_hash']}")
-            print(f"  Deadline:     block {result['deadline_block']}")
-            print(f"  Deploy TX:    {result['deploy_tx']}")
-            print(f"  Record TX:    {result['record_tx']}")
-            print(f"  Fund TX:      {result['fund_tx']}")
-            print(f"\n  Save this escrow ID: {result['escrow_id']}")
-            print(f"  Funds are now held in AT — payer cannot reclaim until deadline")
+            amount_text = f"{float(result.get('amount_signa', args.amount)):g}"
+            deadline_text = f"{args.deadline_hours:g}"
+            print()
+            print("Escrow created:")
+            print(f"ID: {result['escrow_id']}")
+            print(f"Record TX: {result['record_tx']}")
+            print(f"Fund TX: {result['fund_tx']}")
+            print()
+            print(
+                f"Task sent to worker ({amount_text} SIGNA, "
+                f"{deadline_text}h deadline). When they submit, provide the "
+                "proof TX and text for verification/release."
+            )
 
     elif args.cmd == "submit":
         sources = [s.strip() for s in args.sources.split(",") if s.strip()]
