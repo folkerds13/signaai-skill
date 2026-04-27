@@ -86,7 +86,7 @@ These phrases trigger the full workflow automatically.
 python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet create "<payer_passphrase>" <worker_address> <amount_signa> "<task description>" --deadline-hours 24
 ```
 
-The script has built-in dedup — if a matching escrow already exists it returns the existing ID without creating a duplicate. Report the escrow ID and both TX IDs (Record TX and Fund TX) from the script output, then STOP.
+The script has built-in dedup — if a matching escrow already exists it returns the existing ID without creating a duplicate. The script prints `Escrow ID: <id>` immediately at the start (before the 4-minute AT wait), then prints the full receipt at the end. **If the exec call times out or the tool returns before the full receipt appears, relay the Escrow ID line immediately, then run the receipt recovery command to get the TX IDs.** Never report UNKNOWN.
 
 Use this exact receipt format after a successful create:
 
