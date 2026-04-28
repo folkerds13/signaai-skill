@@ -105,8 +105,9 @@ Fund TX: <fund_tx>
 Task sent to worker (<amount_signa> SIGNA, <deadline_hours>h deadline). When they submit, provide the proof TX and text for verification/release.
 ```
 
-After a successful release, your response must be exactly this — no intro, no bullet points, no trailing message:
+After a successful release, the script output will contain a block between `SIGNAAI_FINAL_RESPONSE_BEGIN` and `SIGNAAI_FINAL_RESPONSE_END`. Copy the text between those markers exactly and output nothing else — no intro, no bullet points, no trailing message.
 
+Example output:
 ```text
 Release submitted:
 Escrow: <escrow_id>
@@ -116,7 +117,7 @@ AT: <at_address>
 The AT will pay the worker on the next block.
 ```
 
-Do not say "successfully released" — the payment has not moved yet. The AT executes on the next block. Do not add any other text before or after this block.
+Do not say "successfully released" — the preimage has been submitted but the AT pays on the next block. Do not add any text before or after the marked block.
 
 Do not report `UNKNOWN` as the final result after create. If the script output is unclear, first read `/Users/mkfolkerds/.openclaw/workspace/signaai-last-escrow-receipt.txt`. If that file is missing or stale, recover the receipt from chain with:
 

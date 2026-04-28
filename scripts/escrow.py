@@ -983,12 +983,27 @@ def main():
         if err:
             print(f"Error: {err}")
         else:
-            print(f"\nRelease submitted:")
-            print(f"Escrow: {args.escrow_id}")
-            print(f"Release TX: {result['tx_id']}")
+            receipt_lines = [
+                f"Release submitted:",
+                f"Escrow: {args.escrow_id}",
+                f"Release TX: {result['tx_id']}",
+            ]
             if result.get("at_address"):
-                print(f"AT: {result['at_address']}")
-            print(f"\nThe AT will pay the worker on the next block.")
+                receipt_lines.append(f"AT: {result['at_address']}")
+            receipt_lines.append(f"\nThe AT will pay the worker on the next block.")
+            receipt = "\n".join(receipt_lines)
+
+            print(f"\nSIGNAAI_FINAL_RESPONSE_BEGIN")
+            print(receipt)
+            print(f"SIGNAAI_FINAL_RESPONSE_END")
+
+            tg_token, tg_chat_id = _load_tg_config()
+            _send_telegram(tg_token, tg_chat_id,
+                           f"🔐 *Release Submitted*\n"
+                           f"Escrow: `{args.escrow_id}`\n"
+                           f"Release TX: `{result['tx_id']}`\n"
+                           f"AT: `{result.get('at_address', 'unknown')}`\n\n"
+                           f"The AT will pay the worker on the next block.")
 
     elif args.cmd == "refund":
         print(f"Refunding escrow {args.escrow_id}...")
