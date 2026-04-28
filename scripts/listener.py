@@ -62,8 +62,13 @@ TRIGGER_FILE          = os.path.expanduser("~/.openclaw/workspace/signaai-pendin
 TRIGGER_LOCK          = TRIGGER_FILE + ".lock"
 RESULT_INBOX_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-result-inbox.json")
 RESULT_INBOX_LOCK     = RESULT_INBOX_FILE + ".lock"
-PENDING_RELEASES_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
-LISTENER_LOCK_DIR     = os.path.expanduser("~/.openclaw/workspace")
+PENDING_RELEASES_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
+PENDING_AUTO_RELEASE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-auto-release-queue.json")
+DISPUTE_FILE             = os.path.expanduser("~/.openclaw/workspace/signaai-disputes.json")
+LISTENER_LOCK_DIR        = os.path.expanduser("~/.openclaw/workspace")
+
+REVIEW_MINUTES = int(os.environ.get("SIGNAAI_REVIEW_MINUTES", "10"))
+AUTO_RELEASE   = os.environ.get("SIGNAAI_AUTO_RELEASE", "true").lower() == "true"
 
 # Single-worker task queue — processes one escrow at a time, no parallel races
 _task_queue = queue.Queue()
@@ -473,7 +478,107 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
     if delivered:
         mark_result_notified(escrow_id)
         log(f"[{escrow_id}] Payer notified with delivered result")
+        _queue_auto_release(escrow_id, record)
     return delivered
+
+# ── Auto-release queue ───────────────────────────────────────────────────────
+
+def _queue_auto_release(escrow_id, record):
+    """Add escrow to auto-release queue after result is verified and payer notified."""
+    if not AUTO_RELEASE:
+        return
+    release_after = time.time() + REVIEW_MINUTES * 60
+    try:
+        queue = {}
+        if os.path.exists(PENDING_AUTO_RELEASE_FILE):
+            with open(PENDING_AUTO_RELEASE_FILE) as f:
+                queue = json.load(f)
+        if escrow_id not in queue:
+            queue[escrow_id] = {
+                "release_after": release_after,
+                "result_hash":   record.get("result_hash"),
+                "proof_tx":      record.get("proof_tx"),
+                "submit_tx":     record.get("submit_tx"),
+                "status":        "pending_review",
+            }
+            with open(PENDING_AUTO_RELEASE_FILE, "w") as f:
+                json.dump(queue, f, indent=2)
+            log(f"[{escrow_id}] Auto-release queued in {REVIEW_MINUTES}m")
+    except Exception as e:
+        log(f"[{escrow_id}] Failed to queue auto-release: {e}")
+
+
+def _is_disputed(escrow_id):
+    """Check if payer has disputed this escrow."""
+    try:
+        if os.path.exists(DISPUTE_FILE):
+            with open(DISPUTE_FILE) as f:
+                disputes = json.load(f)
+            return escrow_id in disputes
+    except Exception:
+        pass
+    return False
+
+
+def check_auto_releases(network, tg_token, tg_chat_id):
+    """Fire pending auto-releases whose review window has passed."""
+    if not AUTO_RELEASE or not os.path.exists(PENDING_AUTO_RELEASE_FILE):
+        return
+    try:
+        with open(PENDING_AUTO_RELEASE_FILE) as f:
+            queue = json.load(f)
+    except Exception:
+        return
+
+    now = time.time()
+    changed = False
+    for escrow_id, entry in list(queue.items()):
+        if entry.get("status") != "pending_review":
+            continue
+        if now < entry.get("release_after", float("inf")):
+            continue
+        if _is_disputed(escrow_id):
+            log(f"[{escrow_id}] Auto-release skipped — disputed")
+            queue[escrow_id]["status"] = "disputed"
+            changed = True
+            continue
+
+        log(f"[{escrow_id}] Review window passed — auto-releasing...")
+        try:
+            sys.path.insert(0, os.path.dirname(__file__))
+            from escrow import release_payment
+            worker_cfg = {}
+            if os.path.exists(WORKER_CFG):
+                with open(WORKER_CFG) as f:
+                    worker_cfg = json.load(f)
+            passphrase = worker_cfg.get("passphrase", "")
+            if not passphrase:
+                log(f"[{escrow_id}] Auto-release failed — no passphrase in worker config")
+                continue
+
+            result, err = release_payment(passphrase, escrow_id, network)
+            if err:
+                log(f"[{escrow_id}] Auto-release error: {err}")
+                queue[escrow_id]["status"] = "error"
+            else:
+                log(f"[{escrow_id}] Auto-released — TX: {result.get('tx_id')}")
+                queue[escrow_id]["status"] = "released"
+                send_telegram(tg_token, tg_chat_id,
+                    f"🔐 *Release Submitted*\n"
+                    f"Escrow: `{escrow_id}`\n"
+                    f"Release TX: `{result.get('tx_id')}`\n"
+                    f"AT: `{result.get('at_address', '')}`\n\n"
+                    f"The AT will pay the worker on the next block.",
+                    kind=f"auto_release:{escrow_id}"
+                )
+        except Exception as e:
+            log(f"[{escrow_id}] Auto-release exception: {e}")
+        changed = True
+
+    if changed:
+        with open(PENDING_AUTO_RELEASE_FILE, "w") as f:
+            json.dump(queue, f, indent=2)
+
 
 # ── AT payout watcher ────────────────────────────────────────────────────────
 
@@ -1266,6 +1371,7 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
                 if not syncing:
                     log(f"Block {local} pushed")
                     check_pending_releases(network, tg_token, tg_chat_id)
+                    check_auto_releases(network, tg_token, tg_chat_id)
                 elif local % 10000 == 0:
                     pct = f"{local/total*100:.1f}%" if total else "?"
                     log(f"Syncing... {local}/{total} ({pct})")
@@ -1317,6 +1423,7 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
     if not found:
         log("No new tasks")
     check_pending_releases(network, tg_token, tg_chat_id)
+    check_auto_releases(network, tg_token, tg_chat_id)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
