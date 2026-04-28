@@ -565,11 +565,11 @@ def check_auto_releases(network, tg_token, tg_chat_id):
             else:
                 log(f"[{escrow_id}] Auto-released — TX: {result.get('tx_id')}")
                 queue[escrow_id]["status"] = "released"
+                at_line = f"\nAT: `{result['at_address']}`" if result.get('at_address') else ""
                 send_telegram(tg_token, tg_chat_id,
                     f"🔐 *Release Submitted*\n"
                     f"Escrow: `{escrow_id}`\n"
-                    f"Release TX: `{result.get('tx_id')}`\n"
-                    f"AT: `{result.get('at_address', '')}`\n\n"
+                    f"Release TX: `{result.get('tx_id')}`{at_line}\n\n"
                     f"The AT will pay the worker on the next block.",
                     kind=f"auto_release:{escrow_id}"
                 )
