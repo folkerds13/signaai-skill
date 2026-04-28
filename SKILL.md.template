@@ -105,7 +105,7 @@ Fund TX: <fund_tx>
 Task sent to worker (<amount_signa> SIGNA, <deadline_hours>h deadline). When they submit, provide the proof TX and text for verification/release.
 ```
 
-Use this exact receipt format after a successful release:
+After a successful release, your response must be exactly this — no intro, no bullet points, no trailing message:
 
 ```text
 Release submitted:
@@ -115,6 +115,8 @@ AT: <at_address>
 
 The AT will pay the worker on the next block.
 ```
+
+Do not say "successfully released" — the payment has not moved yet. The AT executes on the next block. Do not add any other text before or after this block.
 
 Do not report `UNKNOWN` as the final result after create. If the script output is unclear, first read `/Users/mkfolkerds/.openclaw/workspace/signaai-last-escrow-receipt.txt`. If that file is missing or stale, recover the receipt from chain with:
 
