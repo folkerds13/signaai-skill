@@ -471,8 +471,10 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
         f"Stamp TX: `{record.get('proof_tx')}`\n"
         f"Submit TX: `{record.get('submit_tx')}`\n"
         f"Result hash: `{status_line}`\n\n"
-        f"To release payment, send:\n"
-        f"Release escrow {escrow_id}"
+        f"Payment review window: {REVIEW_MINUTES} minutes.\n"
+        f"Auto-release scheduled unless disputed.\n\n"
+        f"To block payment, reply:\n"
+        f"Dispute escrow {escrow_id}"
     ), kind=f"payer_task_complete:{escrow_id}")
 
     if delivered:
