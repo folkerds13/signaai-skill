@@ -401,7 +401,7 @@ python3 ~/.openclaw/workspace/skills/signaai/scripts/listener.py --once
 
 | Item | Value |
 |------|-------|
-| Standard fee | ~0.00735 SIGNA ($0.00003) |
+| Standard fee | ~0.02 SIGNA ($0.00008) |
 | Block time | ~4 minutes |
 | Explorer | https://explorer.signum.network |
 | Live dashboard | https://signaai.io |
