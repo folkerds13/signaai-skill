@@ -21,7 +21,7 @@ import os
 import json
 import hashlib
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, signa, ts, fmt_address, FEE_ALIAS, FEE_MESSAGE, ok
+from signum_api import get_api, signa, ts, fmt_address, FEE_ALIAS, fee_message, ok
 from wallet import get_my_address, get_transactions
 from protocol import build_task_complete, parse_task_complete, TASK_COMPLETE_PREFIX
 
@@ -81,7 +81,7 @@ def register_agent(passphrase, agent_name, capabilities=None, version="1.0",
              recipient=_registry_address(registry),
              message=announce_msg,
              messageIsText="true",
-             feeNQT=FEE_MESSAGE)
+             feeNQT=fee_message(announce_msg))
 
     return {
         "alias":    alias,
@@ -281,7 +281,7 @@ def record_task_completion(passphrase, task_id, result_hash, rating=5, network=N
                       recipient=address,  # send to self — public record
                       message=message,
                       messageIsText="true",
-                      feeNQT=FEE_MESSAGE)
+                      feeNQT=fee_message(message))
 
     if not ok(result):
         return None, result.get("error", "Failed to record task")

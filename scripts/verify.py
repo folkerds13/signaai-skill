@@ -25,7 +25,7 @@ import os
 import json
 import hashlib
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, ts, FEE_MESSAGE, ok, EXPLORER_URL
+from signum_api import get_api, ts, fee_message, ok, EXPLORER_URL
 from wallet import get_my_address
 from protocol import build_sigproof, parse_sigproof
 from protocol import PROOF_PREFIX
@@ -89,7 +89,7 @@ def publish_proof(passphrase, content_hash, sources_hash="", label="", network=N
                       recipient=address,  # self-message = public proof record
                       message=message,
                       messageIsText="true",
-                      feeNQT=FEE_MESSAGE)
+                      feeNQT=fee_message(message))
 
     if not ok(result):
         return None, result.get("error", "Failed to publish proof")

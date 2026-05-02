@@ -29,7 +29,7 @@ import struct
 import hashlib
 import secrets
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, signa, nqt, FEE_STANDARD, FEE_MESSAGE, ok
+from signum_api import get_api, signa, nqt, FEE_STANDARD, fee_message, ok
 from wallet import get_my_address, send_signa
 
 # ── AT Bytecode (compiled from contracts/signaai_escrow.smart via smartc-signum-compiler 2.3.0) ──
@@ -230,7 +230,7 @@ def submit_preimage(submitter_passphrase, at_address, preimage_hex, network=None
         amountNQT=AT_MIN_ACTIVATION_NQT,  # must send at least activation amount
         message=message,
         messageIsText="false",
-        feeNQT=FEE_MESSAGE,
+        feeNQT=fee_message(),
     )
 
     if not ok(result):

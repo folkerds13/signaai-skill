@@ -52,7 +52,7 @@ import urllib.parse
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, ts, ok, NODES, USER_AGENT, FEE_MESSAGE
+from signum_api import get_api, ts, ok, NODES, USER_AGENT, fee_message
 from protocol import parse_message, EscrowMessage
 
 ESCROW_ASSIGN_PREFIX = "ESCROW:ASSIGN"
@@ -377,7 +377,7 @@ def publish_result_chunks(passphrase, recipient, escrow_id, result_text, network
                         recipient=recipient,
                         message=message,
                         messageIsText="true",
-                        feeNQT=FEE_MESSAGE)
+                        feeNQT=fee_message(message))
         if not ok(sent):
             return tx_ids, sent.get("error", "Failed to send result chunk")
         tx_ids.append(sent.get("transaction"))

@@ -33,7 +33,7 @@ import hashlib
 import secrets
 import time
 sys.path.insert(0, os.path.dirname(__file__))
-from signum_api import get_api, signa, nqt, ts, FEE_MESSAGE, FEE_STANDARD, ok
+from signum_api import get_api, signa, nqt, ts, fee_message, FEE_STANDARD, ok
 from wallet import get_my_address, send_signa, get_transactions
 from verify import hash_content, publish_proof
 from _deploy_at import deploy_at as _at_deploy, submit_preimage as _at_submit, gen_preimage
@@ -443,7 +443,7 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
                              recipient=payer_address,
                              message=message,
                              messageIsText="true",
-                             feeNQT=FEE_MESSAGE)
+                             feeNQT=fee_message(message))
     if not ok(record_result):
         return None, f"Failed to record escrow: {record_result.get('error')}"
     record_tx = record_result.get("transaction")
@@ -459,7 +459,7 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
              recipient=worker_address,
              message=notify_message,
              messageIsText="true",
-             feeNQT=FEE_MESSAGE)
+             feeNQT=fee_message(notify_message))
 
     escrow = {
         "escrow_id":   escrow_id,
@@ -565,7 +565,7 @@ def submit_proof(worker_passphrase, escrow_id, result_hash, proof_tx,
                                 recipient=recipient_address,
                                 message=message,
                                 messageIsText="true",
-                                feeNQT=FEE_MESSAGE)
+                                feeNQT=fee_message(message))
     if not ok(submit_result_tx):
         return None, f"Failed to submit result: {submit_result_tx.get('error')}"
 
