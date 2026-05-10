@@ -82,7 +82,41 @@ class SignumAPI:
     def post(self, request_type, **params):
         params["requestType"] = request_type
         params["deadline"] = DEADLINE
+        # If secretPhrase is present, sign locally and broadcast instead of sending passphrase
+        if "secretPhrase" in params:
+            return self._sign_and_broadcast(request_type, params)
         return self._call(params, "POST")
+
+    def _sign_and_broadcast(self, request_type, params):
+        """Local signing flow — passphrase never leaves this machine."""
+        try:
+            from signum_crypto import generate_sign_keys, generate_signature, generate_signed_transaction_bytes
+        except ImportError:
+            # Fallback to passphrase if crypto module unavailable
+            return self._call(params, "POST")
+
+        passphrase = params.pop("secretPhrase")
+        keys = generate_sign_keys(passphrase)
+        params["publicKey"] = keys["publicKey"]
+
+        # Get unsigned transaction bytes from node
+        result = self._call(params, "POST")
+        if "error" in result:
+            return result
+        unsigned_hex = result.get("unsignedTransactionBytes")
+        if not unsigned_hex:
+            return result  # Some calls return directly (e.g. broadcastTransaction)
+
+        # Sign locally and broadcast
+        signature = generate_signature(unsigned_hex, keys["signPrivateKey"])
+        signed_hex = generate_signed_transaction_bytes(unsigned_hex, signature)
+        broadcast = self._call({"requestType": "broadcastTransaction",
+                                "transactionBytes": signed_hex}, "POST")
+        if "error" in broadcast:
+            return broadcast
+        # Return same shape callers expect
+        result.update(broadcast)
+        return result
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def signa(nqt):
