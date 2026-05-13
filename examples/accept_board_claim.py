@@ -19,7 +19,6 @@ Environment:
 """
 import os
 import sys
-import hashlib
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from board import accept_claim
@@ -38,7 +37,6 @@ worker_address = sys.argv[2]
 # Task body and parameters — in production these come from your off-chain store,
 # keyed by task_id.
 TASK_BODY = "Summarize the top 3 news stories from signum.community this week."
-task_hash = hashlib.sha256(TASK_BODY.encode()).hexdigest()
 AMOUNT_SIGNA = 1.0
 DEADLINE_HOURS = 48
 
@@ -50,17 +48,18 @@ accept_tx = accept_claim(
 )
 print(f"Claim accepted — TX: {accept_tx}")
 
-# Step 2: create escrow (notifies worker with task description)
-escrow_id, escrow_tx = create_escrow(
+# Step 2: create escrow — create_escrow computes task_hash internally from task_description
+escrow, err = create_escrow(
     payer_passphrase=PASSPHRASE,
     worker_address=worker_address,
     amount_signa=AMOUNT_SIGNA,
-    task_hash=task_hash,
-    deadline_hours=DEADLINE_HOURS,
     task_description=TASK_BODY,
+    deadline_hours=DEADLINE_HOURS,
 )
+if err:
+    sys.exit(f"Escrow failed: {err}")
+
 print(f"Escrow created")
-print(f"  Escrow ID: {escrow_id}")
-print(f"  TX:        {escrow_tx}")
+print(f"  Escrow ID: {escrow['escrow_id']}")
 print()
 print("The worker has been notified. Funds are held in escrow until work is submitted.")
