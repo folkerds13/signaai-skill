@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 PROOF_PREFIX = "SIGPROOF:v1:"
 ESCROW_PREFIX = "ESCROW:"
+TASK_PREFIX = "TASK:"
 TASK_COMPLETE_PREFIX = "TASK_COMPLETE:"
 ARBIT_OPEN_PREFIX = "ARBIT_OPEN:"
 ARBIT_VOTE_PREFIX = "ARBIT_VOTE:"
@@ -83,6 +84,29 @@ class ArbitrationMessage:
 
 
 @dataclass(frozen=True)
+class TaskMessage:
+    """
+    A TASK board protocol message.
+
+    action: OPEN | CLAIM | ACCEPT | CANCEL
+    """
+    action: str
+    task_id: str
+    version: str = "v1"
+    payer_address: str = ""
+    capability_tag: str = ""
+    amount_nqt: int = 0
+    deadline_block: int = 0
+    task_hash: str = ""
+    worker_address: str = ""
+
+    kind = "task"
+
+    def to_message(self):
+        return build_task_message(self)
+
+
+@dataclass(frozen=True)
 class UnknownMessage:
     raw: str
 
@@ -103,6 +127,8 @@ def parse_message(message, strict=False):
         return parse_sigproof(message)
     if message.startswith(ESCROW_PREFIX):
         return parse_escrow(message)
+    if message.startswith(TASK_PREFIX) and not message.startswith(TASK_COMPLETE_PREFIX):
+        return parse_task(message)
     if message.startswith(TASK_COMPLETE_PREFIX):
         return parse_task_complete(message)
     if (message.startswith(ARBIT_OPEN_PREFIX) or
@@ -352,3 +378,89 @@ def _int_or_zero(value):
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+# ── TASK board protocol ───────────────────────────────────────────────────────
+
+def build_task_open(task_id, payer_address, capability_tag,
+                    amount_nqt, deadline_block, task_hash, version="v1"):
+    """TASK:OPEN:v1:<task_id>:<payer>:<capability>:<amount_nqt>:<deadline_block>:<task_hash>"""
+    cap = (capability_tag or "").replace(":", "-")
+    return (f"{TASK_PREFIX}OPEN:{version}:{task_id}:{payer_address}"
+            f":{cap}:{int(amount_nqt)}:{int(deadline_block)}:{task_hash}")
+
+
+def build_task_claim(task_id, worker_address, version="v1"):
+    """TASK:CLAIM:v1:<task_id>:<worker_address>"""
+    return f"{TASK_PREFIX}CLAIM:{version}:{task_id}:{worker_address}"
+
+
+def build_task_accept(task_id, worker_address, version="v1"):
+    """TASK:ACCEPT:v1:<task_id>:<worker_address>"""
+    return f"{TASK_PREFIX}ACCEPT:{version}:{task_id}:{worker_address}"
+
+
+def build_task_cancel(task_id, version="v1"):
+    """TASK:CANCEL:v1:<task_id>"""
+    return f"{TASK_PREFIX}CANCEL:{version}:{task_id}"
+
+
+def build_task_message(msg):
+    action = msg.action.upper()
+    if action == "OPEN":
+        return build_task_open(msg.task_id, msg.payer_address, msg.capability_tag,
+                               msg.amount_nqt, msg.deadline_block, msg.task_hash,
+                               msg.version)
+    if action == "CLAIM":
+        return build_task_claim(msg.task_id, msg.worker_address, msg.version)
+    if action == "ACCEPT":
+        return build_task_accept(msg.task_id, msg.worker_address, msg.version)
+    if action == "CANCEL":
+        return build_task_cancel(msg.task_id, msg.version)
+    raise ProtocolError(f"Unsupported task action: {action}")
+
+
+def parse_task(message):
+    """Parse a TASK: board protocol message."""
+    if not message.startswith(TASK_PREFIX):
+        raise ProtocolError("Not a TASK message")
+    parts = message[len(TASK_PREFIX):].split(":")
+    if len(parts) < 2:
+        raise ProtocolError("Malformed TASK message")
+
+    action = parts[0].upper()
+    version = parts[1] if len(parts) > 2 and parts[1].startswith("v") else "v1"
+    payload = parts[2:] if version else parts[1:]
+
+    if not payload:
+        raise ProtocolError("TASK message missing task_id")
+
+    task_id = payload[0]
+
+    if action == "OPEN":
+        # payload: task_id, payer, capability, amount_nqt, deadline_block, task_hash
+        if len(payload) < 6:
+            raise ProtocolError("Malformed TASK:OPEN message")
+        return TaskMessage(
+            action=action,
+            task_id=task_id,
+            version=version,
+            payer_address=payload[1],
+            capability_tag=payload[2],
+            amount_nqt=_int_or_zero(payload[3]),
+            deadline_block=_int_or_zero(payload[4]),
+            task_hash=payload[5],
+        )
+    if action in ("CLAIM", "ACCEPT"):
+        if len(payload) < 2:
+            raise ProtocolError(f"Malformed TASK:{action} message")
+        return TaskMessage(
+            action=action,
+            task_id=task_id,
+            version=version,
+            worker_address=payload[1],
+        )
+    if action == "CANCEL":
+        return TaskMessage(action=action, task_id=task_id, version=version)
+
+    raise ProtocolError(f"Unsupported task action: {action}")
