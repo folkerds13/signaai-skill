@@ -132,8 +132,11 @@ def parse_sigproof(message):
 
 
 def build_escrow_create(escrow_id, worker, amount_nqt, task_hash,
-                        deadline_block, operator=""):
+                        deadline_block, operator="", task_description=""):
     msg = f"{ESCROW_PREFIX}CREATE:{escrow_id}:{worker}:{int(amount_nqt)}:{task_hash}:{int(deadline_block)}"
+    if task_description:
+        # Always include operator field (possibly empty) so task_description is at a fixed index
+        return f"{msg}:{operator}:{task_description}"
     return f"{msg}:{operator}" if operator else msg
 
 
@@ -166,7 +169,7 @@ def build_escrow_message(msg):
     if action == "CREATE":
         return build_escrow_create(
             msg.escrow_id, msg.worker, msg.amount_nqt, msg.task_hash,
-            msg.deadline_block, msg.operator
+            msg.deadline_block, msg.operator, msg.task_description
         )
     if action == "FUND":
         return build_escrow_fund(msg.escrow_id)
@@ -210,6 +213,7 @@ def parse_escrow(message):
             task_hash=payload[3],
             deadline_block=_int_or_zero(payload[4]),
             operator=payload[5] if len(payload) > 5 else "",
+            task_description=":".join(payload[6:]) if len(payload) > 6 else "",
         )
     if action == "FUND":
         return EscrowMessage(action=action, escrow_id=escrow_id, version=version)

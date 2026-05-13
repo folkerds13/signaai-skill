@@ -448,18 +448,39 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
         return None, f"Failed to record escrow: {record_result.get('error')}"
     record_tx = record_result.get("transaction")
 
-    # Step 4: Notify the worker via on-chain ASSIGN message
-    # Task description only — no credentials or tokens on-chain
-    print(f"  Notifying worker...")
+    # Step 4a: Notify the worker via on-chain CREATE message (includes task description)
+    # Primary notification path — worker listener handles ESCROW:CREATE with worker=their address
+    print(f"  Sending CREATE to worker...")
+    time.sleep(2)
+    worker_create_msg = build_escrow_create(escrow_id, worker_address, amount_nqt,
+                                             task_hash, deadline_block,
+                                             operator=at_address,
+                                             task_description=task_description[:900])
+    create_result = api.post("sendMessage",
+                              secretPhrase=payer_passphrase,
+                              recipient=worker_address,
+                              message=worker_create_msg,
+                              messageIsText="true",
+                              feeNQT=fee_message(worker_create_msg))
+    if not ok(create_result):
+        print(f"  Warning: worker CREATE failed: {create_result.get('error')} — falling back to ASSIGN")
+
+    # Step 4b: Also send ASSIGN to worker (backward-compatible fallback)
+    print(f"  Sending ASSIGN to worker...")
     time.sleep(2)
     notify_message = build_escrow_assign(escrow_id, task_hash,
                                           task_description[:900])
-    api.post("sendMessage",
-             secretPhrase=payer_passphrase,
-             recipient=worker_address,
-             message=notify_message,
-             messageIsText="true",
-             feeNQT=fee_message(notify_message))
+    assign_result = api.post("sendMessage",
+                              secretPhrase=payer_passphrase,
+                              recipient=worker_address,
+                              message=notify_message,
+                              messageIsText="true",
+                              feeNQT=fee_message(notify_message))
+    if not ok(assign_result):
+        assign_err = assign_result.get("error", "unknown error")
+        if not ok(create_result):
+            return None, f"Failed to notify worker (both CREATE and ASSIGN failed): {assign_err}"
+        print(f"  Warning: ASSIGN failed ({assign_err}) — worker will be notified via CREATE")
 
     escrow = {
         "escrow_id":   escrow_id,

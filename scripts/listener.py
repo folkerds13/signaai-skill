@@ -1192,12 +1192,18 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
         maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network)
         return True
 
-    if parsed.action != "ASSIGN":
+    if parsed.action == "CREATE" and parsed.worker == address and parsed.task_description:
+        # Worker received a CREATE with task description — treat as task assignment
+        escrow_id        = parsed.escrow_id
+        task_hash        = parsed.task_hash
+        task_description = parsed.task_description
+        log(f"CREATE task — escrow {escrow_id} from {sender} (TX {tx_id})")
+    elif parsed.action != "ASSIGN":
         return False
-
-    escrow_id        = parsed.escrow_id
-    task_hash        = parsed.task_hash
-    task_description = parsed.task_description
+    else:
+        escrow_id        = parsed.escrow_id
+        task_hash        = parsed.task_hash
+        task_description = parsed.task_description
 
     task = {
         "escrow_id":        escrow_id,
