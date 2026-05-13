@@ -44,6 +44,9 @@ class SignumAPI:
         self.active_node = self.nodes[0]
 
     def _call(self, params, method="GET", retries=2):
+        if "secretPhrase" in params:
+            return {"error": "Refusing to send secretPhrase to node; local signing is required"}
+
         url = f"{self.active_node}/api"
         for attempt in range(retries):
             try:
@@ -91,9 +94,8 @@ class SignumAPI:
         """Local signing flow — passphrase never leaves this machine."""
         try:
             from signum_crypto import generate_sign_keys, generate_signature, generate_signed_transaction_bytes
-        except ImportError:
-            # Fallback to passphrase if crypto module unavailable
-            return self._call(params, "POST")
+        except ImportError as exc:
+            return {"error": f"Local signing unavailable: {exc}"}
 
         passphrase = params.pop("secretPhrase")
         keys = generate_sign_keys(passphrase)

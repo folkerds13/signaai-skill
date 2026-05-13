@@ -102,8 +102,14 @@ def get_my_address(passphrase, network=None):
     """Derive the address for a given passphrase (without sending anything)."""
     if not passphrase or not str(passphrase).strip():
         return None, "Passphrase cannot be empty"
+    try:
+        from signum_crypto import generate_sign_keys
+    except ImportError as exc:
+        return None, f"Local key derivation unavailable: {exc}"
+
+    keys = generate_sign_keys(passphrase)
     api = get_api(network)
-    result = api.get("getAccountId", secretPhrase=passphrase)
+    result = api.get("getAccountId", publicKey=keys["publicKey"])
     if not ok(result):
         return None, result.get("error")
     return result.get("accountRS"), None
