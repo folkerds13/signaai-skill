@@ -99,6 +99,7 @@ class TaskMessage:
     deadline_block: int = 0
     task_hash: str = ""
     worker_address: str = ""
+    task_summary: str = ""
 
     kind = "task"
 
@@ -383,11 +384,15 @@ def _int_or_zero(value):
 # ── TASK board protocol ───────────────────────────────────────────────────────
 
 def build_task_open(task_id, payer_address, capability_tag,
-                    amount_nqt, deadline_block, task_hash, version="v1"):
-    """TASK:OPEN:v1:<task_id>:<payer>:<capability>:<amount_nqt>:<deadline_block>:<task_hash>"""
+                    amount_nqt, deadline_block, task_hash,
+                    version="v1", task_summary=""):
+    """TASK:OPEN:v1:<task_id>:<payer>:<capability>:<amount_nqt>:<deadline_block>:<task_hash>[:<summary>]"""
     cap = (capability_tag or "").replace(":", "-")
-    return (f"{TASK_PREFIX}OPEN:{version}:{task_id}:{payer_address}"
+    base = (f"{TASK_PREFIX}OPEN:{version}:{task_id}:{payer_address}"
             f":{cap}:{int(amount_nqt)}:{int(deadline_block)}:{task_hash}")
+    if task_summary:
+        return f"{base}:{sanitize_label(task_summary, 200)}"
+    return base
 
 
 def build_task_claim(task_id, worker_address, version="v1"):
@@ -438,7 +443,7 @@ def parse_task(message):
     task_id = payload[0]
 
     if action == "OPEN":
-        # payload: task_id, payer, capability, amount_nqt, deadline_block, task_hash
+        # payload: task_id, payer, capability, amount_nqt, deadline_block, task_hash[, summary]
         if len(payload) < 6:
             raise ProtocolError("Malformed TASK:OPEN message")
         return TaskMessage(
@@ -450,6 +455,7 @@ def parse_task(message):
             amount_nqt=_int_or_zero(payload[3]),
             deadline_block=_int_or_zero(payload[4]),
             task_hash=payload[5],
+            task_summary=payload[6] if len(payload) > 6 else "",
         )
     if action in ("CLAIM", "ACCEPT"):
         if len(payload) < 2:

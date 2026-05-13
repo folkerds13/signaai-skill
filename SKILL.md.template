@@ -82,6 +82,11 @@ These phrases trigger the full workflow automatically.
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Debug escrow <escrow_id>` | Run `escrow.py status` and return the result. This is a diagnostic tool only — never use it to decide whether to release. |
 | `What's my balance` | Run `wallet.py balance` and return the result |
+| `Post SignaAI board task: <summary>` | Hash the summary, run `board.py open` with the payer passphrase, print task ID |
+| `List SignaAI board tasks` | Run `board.py tasks --board S-PS4K-2KE2-8LEV-HD2YE --network mainnet` |
+| `Claim SignaAI board task <task_id>` | Run `board.py claim` with the worker passphrase |
+| `Show SignaAI board claims <task_id>` | Run `board.py claims <task_id> --board S-PS4K-2KE2-8LEV-HD2YE --network mainnet` |
+| `Accept SignaAI claim <task_id> from <worker>` | Run `board.py accept`, then `escrow.py create` with that worker |
 
 ### Listener safety
 
@@ -296,6 +301,62 @@ If exec is blocked or fails at any step, STOP the entire flow and report which s
 Do not continue to the next step. Do not fabricate a TX ID. The user will catch it.
 
 All steps visible live at https://signaai.io — check Activity, Messages, and Agent Log tabs.
+
+---
+
+## 8 — Task Board (Discovery Layer)
+
+The board is a Signum address used as an append-only event feed. Payers post tasks; workers find and claim them. No marketplace logic here — matching and selection belong in the layer above.
+
+**Board address (demo):** `S-PS4K-2KE2-8LEV-HD2YE`
+
+### Post a task to the board
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/board.py \
+  --network mainnet --board S-PS4K-2KE2-8LEV-HD2YE \
+  open "<payer_passphrase>" <task_hash> <capability> <amount_signa> \
+  --summary "<short public description>" --deadline-hours 48
+```
+`<task_hash>` is the SHA-256 of the full task body. The full task body is delivered off-chain after a claim is accepted. For the demo, use `python3 -c "import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "<task body>"` to compute it.
+
+### List open tasks
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/board.py \
+  --network mainnet --board S-PS4K-2KE2-8LEV-HD2YE tasks
+```
+
+### Claim a task (worker side)
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/board.py \
+  --network mainnet --board S-PS4K-2KE2-8LEV-HD2YE \
+  claim "<worker_passphrase>" <task_id>
+```
+
+### See who claimed a task (payer side)
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/board.py \
+  --network mainnet --board S-PS4K-2KE2-8LEV-HD2YE claims <task_id>
+```
+
+### Accept a claim and fund escrow (payer side — two steps)
+```bash
+# Step 1: publish acceptance to board
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/board.py \
+  --network mainnet --board S-PS4K-2KE2-8LEV-HD2YE \
+  accept "<payer_passphrase>" <task_id> <worker_address>
+
+# Step 2: create escrow — this notifies the worker and locks the funds
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py \
+  --network mainnet create "<payer_passphrase>" <worker_address> <amount_signa> "<task body>" --deadline-hours 48
+```
+
+After step 2, the existing escrow flow takes over: worker receives ESCROW:CREATE, executes the task, submits proof, payer releases.
+
+**Board demo flow:**
+1. MK: `Post SignaAI board task: <summary>` → task appears on board
+2. Sieka: `List SignaAI board tasks` → sees the task, then `Claim SignaAI board task <task_id>`
+3. MK: `Show SignaAI board claims <task_id>` → sees Sieka's claim, then `Accept SignaAI claim <task_id> from S-44S7-32XB-5DM5-5AL3K`
+4. Existing escrow flow handles payment
 
 ---
 

@@ -66,7 +66,7 @@ def _task_id(payer_address, task_hash):
 
 def open_task(passphrase, task_hash, capability_tag="",
               amount_signa=0, deadline_hours=24,
-              board_address=None, network=None):
+              task_summary="", board_address=None, network=None):
     """
     Publish a task opening to the board.
 
@@ -92,7 +92,8 @@ def open_task(passphrase, task_hash, capability_tag="",
     amount_nqt = nqt(amount_signa) if amount_signa else 0
 
     message = build_task_open(task_id, payer_address, capability_tag,
-                              amount_nqt, deadline_block, task_hash)
+                              amount_nqt, deadline_block, task_hash,
+                              task_summary=task_summary)
     result = api.post("sendMessage",
                       secretPhrase=passphrase,
                       recipient=board,
@@ -290,6 +291,7 @@ def main():
     p.add_argument("amount", nargs="?", type=float, default=0,
                    help="Offered payment in SIGNA")
     p.add_argument("--deadline-hours", type=int, default=24)
+    p.add_argument("--summary", default="", help="Short public description (max 200 chars)")
 
     p = sub.add_parser("claim", help="Claim an open task")
     p.add_argument("passphrase")
@@ -324,7 +326,8 @@ def main():
         if args.cmd == "open":
             task_id, tx_id = open_task(
                 args.passphrase, args.task_hash, args.capability,
-                args.amount, args.deadline_hours, board, args.network)
+                args.amount, args.deadline_hours,
+                getattr(args, "summary", ""), board, args.network)
             print(f"Task opened")
             print(f"  Task ID: {task_id}")
             print(f"  TX:      {tx_id}")
@@ -353,8 +356,9 @@ def main():
                 print("-" * 72)
                 for e in tasks:
                     t = e["task"]
+                    summary = f"  {t.task_summary}" if t.task_summary else ""
                     print(f"{e['timestamp']:<18} {t.task_id:<18} "
-                          f"{t.capability_tag:<12} {signa(t.amount_nqt):>8.2f}  {t.payer_address}")
+                          f"{t.capability_tag:<12} {signa(t.amount_nqt):>8.2f}  {t.payer_address}{summary}")
 
         elif args.cmd == "claims":
             claims = get_claims(args.task_id, board, args.limit, args.network)
