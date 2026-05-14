@@ -74,8 +74,11 @@ def _dedup_check(task_description):
             with open(DEDUP_FILE) as f:
                 dedup = json.load(f)
             entry = dedup.get(task_key)
-            if entry and time.time() - entry["created_at"] < DEDUP_TTL:
-                return entry["escrow_id"]  # may be "pending" or real ID
+            if entry:
+                age = time.time() - entry["created_at"]
+                ttl = 1800 if entry["escrow_id"] == "pending" else DEDUP_TTL
+                if age < ttl:
+                    return entry["escrow_id"]  # may be "pending" or real ID
     except Exception:
         pass
     return None
