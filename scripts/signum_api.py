@@ -16,10 +16,10 @@ FEE_ALIAS     = 20_000_000  # 0.2 SIGNA — alias registration fee
 FEE_AT        = 2_000_000   # 0.02 SIGNA — minimum fee for AT (smart contract) transactions
 
 def fee_message(message=""):
-    """Dynamic message fee: 0.01 SIGNA base + 0.01 per 1KB. Min 0.01, covers up to ~6KB."""
+    """Dynamic message fee: 0.02 SIGNA base + 0.01 per 1KB. Min 0.02 (network minimum)."""
     msg_bytes = len(message.encode("utf-8")) if message else 0
     chunks = max(1, -(-msg_bytes // 1024))  # ceiling division
-    return chunks * 1_000_000
+    return max(FEE_STANDARD, chunks * 1_000_000)
 DEADLINE      = 1440       # minutes — max transaction validity window
 USER_AGENT    = "SignaAI/0.1.0"
 
