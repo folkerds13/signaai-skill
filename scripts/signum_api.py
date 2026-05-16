@@ -11,15 +11,16 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN
 
 # ── Constants ────────────────────────────────────────────────────────────────
 NQT = 100_000_000          # 1 SIGNA = 100,000,000 NQT (Nano-Quant)
-FEE_STANDARD  = 2_000_000   # 0.02 SIGNA — standard transaction fee (node minimum is 0.01)
+FEE_STANDARD  = 2_000_000   # 0.02 SIGNA — standard transaction fee
+FEE_MESSAGE   = 5_000_000   # 0.05 SIGNA — minimum for message transactions (node raised minimum)
 FEE_ALIAS     = 20_000_000  # 0.2 SIGNA — alias registration fee
 FEE_AT        = 2_000_000   # 0.02 SIGNA — minimum fee for AT (smart contract) transactions
 
 def fee_message(message=""):
-    """Dynamic message fee: 0.02 SIGNA base + 0.01 per 1KB. Min 0.02 (network minimum)."""
+    """Dynamic message fee: 0.05 SIGNA base + 0.01 per 1KB. Min 0.05 (current node minimum)."""
     msg_bytes = len(message.encode("utf-8")) if message else 0
     chunks = max(1, -(-msg_bytes // 1024))  # ceiling division
-    return max(FEE_STANDARD, chunks * 1_000_000)
+    return max(FEE_MESSAGE, chunks * 1_000_000)
 DEADLINE      = 1440       # minutes — max transaction validity window
 USER_AGENT    = "SignaAI/0.1.0"
 
