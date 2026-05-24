@@ -66,6 +66,7 @@ PENDING_RELEASES_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-pen
 PENDING_AUTO_RELEASE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-auto-release-queue.json")
 DISPUTE_FILE             = os.path.expanduser("~/.openclaw/workspace/signaai-disputes.json")
 LISTENER_LOCK_DIR        = os.path.expanduser("~/.openclaw/workspace")
+PAYER_QUEUE_FILE         = os.path.expanduser("~/.openclaw/workspace/signaai-payer-queue.json")
 
 REVIEW_MINUTES = int(os.environ.get("SIGNAAI_REVIEW_MINUTES", "10"))
 AUTO_RELEASE   = os.environ.get("SIGNAAI_AUTO_RELEASE", "true").lower() == "true"
@@ -1381,6 +1382,7 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
                 syncing = local < total
                 if not syncing:
                     log(f"Block {local} pushed")
+                    process_payer_queue(network, worker_cfg, tg_token, tg_chat_id)
                     check_pending_releases(network, tg_token, tg_chat_id)
                     check_auto_releases(network, tg_token, tg_chat_id)
                 elif local % 10000 == 0:
@@ -1411,11 +1413,87 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
             pass
 
 
+# ── Payer queue processor ─────────────────────────────────────────────────────
+
+def _load_payer_queue():
+    if os.path.exists(PAYER_QUEUE_FILE):
+        try:
+            with open(PAYER_QUEUE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+def _save_payer_queue(items):
+    os.makedirs(os.path.dirname(PAYER_QUEUE_FILE), exist_ok=True)
+    tmp = PAYER_QUEUE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(items, f, indent=2)
+    os.replace(tmp, PAYER_QUEUE_FILE)
+
+def process_payer_queue(network, worker_cfg, tg_token, tg_chat_id):
+    """
+    Read signaai-payer-queue.json and create any pending escrows directly in Python.
+    The LLM writes tasks here; the daemon runs escrow.py deterministically — no hallucination.
+    """
+    if not worker_cfg:
+        return
+
+    items = _load_payer_queue()
+    pending = [i for i in items if i.get("status") == "pending"]
+    if not pending:
+        return
+
+    sys.path.insert(0, os.path.dirname(__file__))
+    from escrow import create_escrow
+
+    passphrase   = worker_cfg["passphrase"]
+    worker_addr  = "S-44S7-32XB-5DM5-5AL3K"  # Sieka — default payer target
+
+    for item in pending:
+        task        = item.get("task", "").strip()
+        target_addr = item.get("worker_address", worker_addr).strip() or worker_addr
+        amount      = float(item.get("amount", 1.0))
+        item_id     = item.get("id", "?")
+
+        if not task:
+            item["status"] = "error"
+            item["error"]  = "Missing task description"
+            continue
+
+        log(f"Payer queue [{item_id[:8]}]: creating escrow for '{task[:60]}...'")
+        escrow, err = create_escrow(passphrase, target_addr, amount, task,
+                                    deadline_hours=24, network=network)
+        if err:
+            log(f"Payer queue [{item_id[:8]}]: creation failed — {err}")
+            item["status"] = "error"
+            item["error"]  = err
+            send_telegram(tg_token, tg_chat_id, f"❌ *Escrow creation failed*\n{err}")
+            continue
+
+        escrow_id = escrow["escrow_id"]
+        if escrow.get("duplicate"):
+            log(f"Payer queue [{item_id[:8]}]: duplicate — existing escrow {escrow_id}")
+            item["status"]    = "duplicate"
+            item["escrow_id"] = escrow_id
+        else:
+            log(f"Payer queue [{item_id[:8]}]: escrow created — {escrow_id}")
+            item["status"]    = "created"
+            item["escrow_id"] = escrow_id
+            send_telegram(tg_token, tg_chat_id,
+                          f"\U0001f510 *Escrow Created*\nID: `{escrow_id}`\nTask: {task[:120]}")
+
+    _save_payer_queue(items)
+
+
 # ── Polling fallback ──────────────────────────────────────────────────────────
 
 def poll_once(address, network, state, tg_token, tg_chat_id,
               hook_token=None, hook_path="/hooks", gw_port=18789,
               worker_cfg=None):
+    # Check payer queue first — create any pending escrows without LLM involvement
+    process_payer_queue(network, worker_cfg, tg_token, tg_chat_id)
+
     api = get_api(network)
     result = api.get("getAccountTransactions",
                      account=address,

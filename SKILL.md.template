@@ -1,35 +1,54 @@
 ---
 name: signaai
-description: Blockchain escrow and payments on Signum. Use when asked to create an escrow, release an escrow, check a balance, or stamp output on-chain. All operations run Python scripts via exec — never use internal task creation tools.
+description: Blockchain escrow and payments on Signum. Use when asked to create an escrow, release an escrow, check a balance, or stamp output on-chain.
 ---
 
 # SignaAI — Blockchain Escrow
-
-> All SignaAI operations are exec calls to Python scripts. When triggered, call exec immediately.
-> Never create an internal OpenClaw task. Never research a topic yourself. Just run exec.
 
 Scripts live at: `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/`
 
 ---
 
-## When you see "Create SignaAI escrow for:" — CALL EXEC
+## When you see "Create SignaAI escrow for:" — WRITE TO QUEUE FILE
 
-This creates a blockchain AT smart contract that locks funds for a worker to complete a task. It is NOT a research operation and NOT an internal OpenClaw task. Run this exec command immediately:
+**The daemon creates escrows. Your only job is to write the task to the queue file.**
+
+Append one entry to `/Users/mkfolkerds/.openclaw/workspace/signaai-payer-queue.json`:
 
 ```bash
-nohup python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet create @worker S-44S7-32XB-5DM5-5AL3K 1 "<paste task description here>" --deadline-hours 24 >> /Users/mkfolkerds/.openclaw/logs/escrow-create.log 2>&1 & echo "Escrow creation started (PID $!). Receipt arrives via Telegram in ~6-10 minutes."
+python3 - <<'EOF'
+import json, uuid, datetime, os
+
+queue_file = os.path.expanduser("~/.openclaw/workspace/signaai-payer-queue.json")
+items = []
+if os.path.exists(queue_file):
+    with open(queue_file) as f:
+        items = json.load(f)
+
+items.append({
+    "id": str(uuid.uuid4()),
+    "task": "<TASK_DESCRIPTION>",
+    "worker_address": "S-44S7-32XB-5DM5-5AL3K",
+    "amount": 1.0,
+    "status": "pending",
+    "queued_at": datetime.datetime.utcnow().isoformat() + "Z"
+})
+
+with open(queue_file, "w") as f:
+    json.dump(items, f, indent=2)
+
+print("Queued.")
+EOF
 ```
 
-Replace `<paste task description here>` with the task text from the user's message.
+Replace `<TASK_DESCRIPTION>` with the full task from the user's message.
 
-`@worker` resolves the payer passphrase automatically — no passphrase needed in the command.
-
-**After running exec:** reply that escrow creation started and the receipt will arrive via Telegram in ~6-10 minutes. Write the task to `memory/tasks.md` as in-progress. Then STOP — do not run additional commands.
+**After running:** reply "Task queued. The daemon will create the escrow and you'll receive a Telegram receipt in ~6–10 minutes." Then STOP.
 
 Do NOT:
-- Research the topic in the task description — the worker agent does that
-- Create an internal OpenClaw task or sub-agent for this
-- Wait for more output — the echo reply is immediate
+- Call `escrow.py create` directly — the daemon does that
+- Research the task — the worker agent does that
+- Create an internal OpenClaw task or sub-agent
 
 ---
 
@@ -70,11 +89,6 @@ python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py -
 python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet stamp "<passphrase>" "<output text>" --label "<label>"
 ```
 
-**Debug escrow (diagnostic only — never use to decide release):**
-```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet status <escrow_id> --address <address>
-```
-
 ---
 
 ## Exec Format Rule
@@ -85,9 +99,9 @@ Always pass `--network mainnet` as a flag. Never use `SIGNUM_NETWORK=mainnet pyt
 
 ## No Repeated Transactions
 
-Before any escrow create or release: read `memory/tasks.md`. If the task is already logged as complete, report it and stop. After completing any transaction, append to `memory/tasks.md`:
+Before any escrow create or release: read `memory/tasks.md`. If the task is already logged as complete, report it and stop. After the daemon confirms an escrow ID (via Telegram), append to `memory/tasks.md`:
 ```
-| <date> | <task> | Escrow: <id>, TX: <tx_id> | ✅ COMPLETE |
+| <date> | <task> | Escrow: <id> | ✅ IN PROGRESS |
 ```
 
 ---
@@ -95,7 +109,5 @@ Before any escrow create or release: read `memory/tasks.md`. If the task is alre
 ## Never Fabricate Blockchain Data
 
 Blockchain state must come from actually running the scripts. Never guess or simulate TX IDs, escrow IDs, or balances.
-
-If exec fails: say so and show the exact command. Never continue with fabricated data.
 
 Every real transaction appears at https://signaai.io — if it's not there, it didn't happen.
