@@ -11,39 +11,15 @@ Scripts live at: `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/`
 
 ## When you see "Create SignaAI escrow for:" — WRITE TO QUEUE FILE
 
-**The daemon creates escrows. Your only job is to write the task to the queue file.**
-
-Append one entry to `/Users/mkfolkerds/.openclaw/workspace/signaai-payer-queue.json`:
+**The daemon creates escrows. Your only job is to run this one command:**
 
 ```bash
-python3 - <<'EOF'
-import json, uuid, datetime, os
-
-queue_file = os.path.expanduser("~/.openclaw/workspace/signaai-payer-queue.json")
-items = []
-if os.path.exists(queue_file):
-    with open(queue_file) as f:
-        items = json.load(f)
-
-items.append({
-    "id": str(uuid.uuid4()),
-    "task": "<TASK_DESCRIPTION>",
-    "worker_address": "<WORKER_ADDRESS>",
-    "amount": 1.0,
-    "status": "pending",
-    "queued_at": datetime.datetime.utcnow().isoformat() + "Z"
-})
-
-with open(queue_file, "w") as f:
-    json.dump(items, f, indent=2)
-
-print("Queued.")
-EOF
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/queue_escrow.py "<TASK_DESCRIPTION>" --worker <WORKER_ADDRESS>
 ```
 
-Replace `<TASK_DESCRIPTION>` with the full task from the user's message.
+Replace `<TASK_DESCRIPTION>` with the full task text and `<WORKER_ADDRESS>` with the correct address from the Known Agents table below.
 
-**After running:** reply "Task queued. The daemon will create the escrow and you'll receive a Telegram receipt in ~6–10 minutes." Then STOP.
+**After running:** reply "Task queued. The daemon will create the escrow — receipt via Telegram in ~6–10 minutes." Then STOP.
 
 Do NOT:
 - Call `escrow.py create` directly — the daemon does that
