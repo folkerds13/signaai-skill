@@ -94,9 +94,12 @@ class SignumAPI:
     def _sign_and_broadcast(self, request_type, params):
         """Local signing flow — passphrase never leaves this machine."""
         try:
-            from signum_crypto import generate_sign_keys, generate_signature, generate_signed_transaction_bytes
-        except ImportError as exc:
-            return {"error": f"Local signing unavailable: {exc}"}
+            from signaai.crypto import generate_sign_keys, generate_signature, generate_signed_transaction_bytes
+        except ImportError:
+            try:
+                from signum_crypto import generate_sign_keys, generate_signature, generate_signed_transaction_bytes
+            except ImportError as exc:
+                return {"error": f"Local signing unavailable: {exc}"}
 
         passphrase = params.pop("secretPhrase")
         keys = generate_sign_keys(passphrase)

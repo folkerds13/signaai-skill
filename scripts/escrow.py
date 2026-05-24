@@ -46,13 +46,24 @@ from protocol import (
 # ── Constants ─────────────────────────────────────────────────────────────────
 ESCROW_PREFIX    = "ESCROW:"
 BLOCKS_PER_HOUR  = 15  # ~4 min per block = 15 blocks/hour
-DEDUP_FILE       = os.path.expanduser("~/.openclaw/workspace/signaai-escrow-dedup.json")
-DEDUP_TTL        = 3600  # seconds — ignore duplicate requests within 1 hour
-RELEASE_LOG_FILE      = os.path.expanduser("~/.openclaw/workspace/signaai-release-log.json")
-PENDING_RELEASES_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
+
+# State directory — override with SIGNAAI_STATE_DIR for non-OpenClaw setups
+_STATE_DIR = os.environ.get(
+    "SIGNAAI_STATE_DIR",
+    os.path.expanduser("~/.openclaw/workspace")
+)
+_LOG_DIR = os.environ.get(
+    "SIGNAAI_LOG_DIR",
+    os.path.expanduser("~/.openclaw/logs")
+)
+
+DEDUP_FILE            = os.path.join(_STATE_DIR, "signaai-escrow-dedup.json")
+DEDUP_TTL             = 3600  # seconds — ignore duplicate requests within 1 hour
+RELEASE_LOG_FILE      = os.path.join(_STATE_DIR, "signaai-release-log.json")
+PENDING_RELEASES_FILE = os.path.join(_STATE_DIR, "signaai-pending-releases.json")
 PREIMAGE_DIR          = os.path.expanduser("~/.signaai/preimages")
-RECEIPT_FILE          = os.path.expanduser("~/.openclaw/workspace/signaai-last-escrow-receipt.txt")
-LOG_FILE              = os.path.expanduser("~/.openclaw/logs/escrow-create.log")
+RECEIPT_FILE          = os.path.join(_STATE_DIR, "signaai-last-escrow-receipt.txt")
+LOG_FILE              = os.path.join(_LOG_DIR, "escrow-create.log")
 
 # Escrow states
 STATE_CREATED   = "CREATED"

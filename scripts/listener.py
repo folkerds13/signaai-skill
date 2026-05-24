@@ -57,16 +57,23 @@ from protocol import parse_message, EscrowMessage
 
 ESCROW_ASSIGN_PREFIX = "ESCROW:ASSIGN"
 ESCROW_RESULT_PREFIX = "ESCROW:RESULT:"
-STATE_FILE            = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
-TRIGGER_FILE          = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
+
+# State directory — override with SIGNAAI_STATE_DIR for non-OpenClaw setups
+_STATE_DIR = os.environ.get(
+    "SIGNAAI_STATE_DIR",
+    os.path.expanduser("~/.openclaw/workspace")
+)
+
+STATE_FILE            = os.path.join(_STATE_DIR, "signaai-listener-state.json")
+TRIGGER_FILE          = os.path.join(_STATE_DIR, "signaai-pending-tasks.json")
 TRIGGER_LOCK          = TRIGGER_FILE + ".lock"
-RESULT_INBOX_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-result-inbox.json")
+RESULT_INBOX_FILE     = os.path.join(_STATE_DIR, "signaai-result-inbox.json")
 RESULT_INBOX_LOCK     = RESULT_INBOX_FILE + ".lock"
-PENDING_RELEASES_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
-PENDING_AUTO_RELEASE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-auto-release-queue.json")
-DISPUTE_FILE             = os.path.expanduser("~/.openclaw/workspace/signaai-disputes.json")
-LISTENER_LOCK_DIR        = os.path.expanduser("~/.openclaw/workspace")
-PAYER_QUEUE_FILE         = os.path.expanduser("~/.openclaw/workspace/signaai-payer-queue.json")
+PENDING_RELEASES_FILE    = os.path.join(_STATE_DIR, "signaai-pending-releases.json")
+PENDING_AUTO_RELEASE_FILE = os.path.join(_STATE_DIR, "signaai-auto-release-queue.json")
+DISPUTE_FILE             = os.path.join(_STATE_DIR, "signaai-disputes.json")
+LISTENER_LOCK_DIR        = _STATE_DIR
+PAYER_QUEUE_FILE         = os.path.join(_STATE_DIR, "signaai-payer-queue.json")
 
 REVIEW_MINUTES = int(os.environ.get("SIGNAAI_REVIEW_MINUTES", "10"))
 AUTO_RELEASE   = os.environ.get("SIGNAAI_AUTO_RELEASE", "true").lower() == "true"
