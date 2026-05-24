@@ -1,148 +1,91 @@
 ---
 name: signaai
-description: Send payments, messages, escrow, and verifiable outputs between AI agents on the Signum blockchain. Use when asked about agent-to-agent payments, on-chain messages, escrow tasks, verifying AI output, or checking wallet balances. Also use when running multi-agent demos or when one OpenClaw needs to interact with another.
+description: Blockchain escrow and payments on Signum. Use when asked to create an escrow, release an escrow, check a balance, or stamp output on-chain. All operations run Python scripts via exec — never use internal task creation tools.
 ---
 
-# SignaAI — AI Agent Blockchain Layer
+# SignaAI — Blockchain Escrow
 
-SignaAI lets AI agents pay each other, lock funds in AT-backed escrow, and prove their outputs on Signum blockchain. Fees under $0.0001. No gas wars.
+> All SignaAI operations are exec calls to Python scripts. When triggered, call exec immediately.
+> Never create an internal OpenClaw task. Never research a topic yourself. Just run exec.
 
-**Scripts:** `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/`
-Always pass `--network mainnet` as a flag. Never use `SIGNUM_NETWORK=mainnet python3 ...` — env var prefix is not supported.
+Scripts live at: `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/`
 
 ---
 
-## Quick Commands
+## When you see "Create SignaAI escrow for:" — CALL EXEC
 
-| Say this | What you do |
-|----------|-------------|
-| `Create SignaAI escrow for: <task>` | Run `escrow.py create` with nohup (see below). Reply that creation started; receipt arrives via Telegram. |
-| `Release escrow <escrow_id>` | Run `escrow.py release @worker <escrow_id>`. Copy release receipt exactly from script output. |
-| `Dispute escrow <escrow_id>` | Write `{"<escrow_id>": true}` to `~/.openclaw/workspace/signaai-disputes.json`. Confirm to user. |
-| `What's my balance` | Run `wallet.py balance` and return the result. |
-| `Debug escrow <escrow_id>` | Run `escrow.py status <escrow_id> --address <address>` (diagnostic only). |
+This creates a blockchain AT smart contract that locks funds for a worker to complete a task. It is NOT a research operation and NOT an internal OpenClaw task. Run this exec command immediately:
+
+```bash
+nohup python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet create @worker S-44S7-32XB-5DM5-5AL3K 1 "<paste task description here>" --deadline-hours 24 >> /Users/mkfolkerds/.openclaw/logs/escrow-create.log 2>&1 & echo "Escrow creation started (PID $!). Receipt arrives via Telegram in ~6-10 minutes."
+```
+
+Replace `<paste task description here>` with the task text from the user's message.
+
+`@worker` resolves the payer passphrase automatically — no passphrase needed in the command.
+
+**After running exec:** reply that escrow creation started and the receipt will arrive via Telegram in ~6-10 minutes. Write the task to `memory/tasks.md` as in-progress. Then STOP — do not run additional commands.
+
+Do NOT:
+- Research the topic in the task description — the worker agent does that
+- Create an internal OpenClaw task or sub-agent for this
+- Wait for more output — the echo reply is immediate
+
+---
+
+## When you see "Release escrow \<id\>" or "✅ SignaAI Task Complete" — CALL EXEC
+
+Run release immediately. No confirmation needed.
+
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet release @worker <escrow_id>
+```
+
+The script output contains a block between `SIGNAAI_FINAL_RESPONSE_BEGIN` and `SIGNAAI_FINAL_RESPONSE_END`. Copy the text between those markers exactly and output nothing else.
+
+Do NOT run `escrow.py status` before release — it always returns CREATED and will block a valid release.
 
 ---
 
 ## Known Agents
-
-Either agent can be payer or worker depending on who is creating the escrow.
 
 | Agent | Address |
 |-------|---------|
 | MK    | `S-PS4K-2KE2-8LEV-HD2YE` |
 | Sieka | `S-44S7-32XB-5DM5-5AL3K` |
 
+MK hires Sieka. Sieka hires MK. Never hire yourself.
+
 ---
 
-## 1 — Check Balance
+## Other Commands
 
+**Balance:**
 ```bash
 python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet balance <address>
 ```
 
----
-
-## 2 — Create Escrow
-
-AT-backed escrow locks funds on-chain trustlessly. The AT contract takes ~4 minutes to deploy, so run creation with `nohup` — the echo confirms it started immediately, and the receipt arrives via Telegram when deployment completes (~6-10 min).
-
-**If no worker is specified, use the other known agent** (MK hires Sieka; Sieka hires MK — never hire yourself).
-
+**Stamp output on-chain:**
 ```bash
-nohup python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet create @worker S-44S7-32XB-5DM5-5AL3K 1 "<task description>" --deadline-hours 24 >> /Users/mkfolkerds/.openclaw/logs/escrow-create.log 2>&1 & echo "Escrow creation started (PID $!). Receipt arrives via Telegram in ~6-10 minutes."
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet stamp "<passphrase>" "<output text>" --label "<label>"
 ```
 
-**After running:** reply that escrow creation is underway. Do not run any follow-up commands — the script notifies via Telegram when done.
-
-The `@worker` token resolves the payer passphrase from `~/.openclaw/signaai-worker.json` automatically — no passphrase needed in the command.
-
-Error log: `/Users/mkfolkerds/.openclaw/logs/escrow-create.log`
-
----
-
-## 3 — Release Payment
-
-Run immediately when triggered — no confirmation needed. Two valid triggers:
-1. User sends `Release escrow <id>`
-2. You receive `✅ SignaAI Task Complete` with a Submit TX
-
-The release script verifies the proof stamp internally before paying. Do NOT run `escrow.py status` before release — it scans the wrong address and will block a valid release.
-
+**Debug escrow (diagnostic only — never use to decide release):**
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet release @worker <escrow_id>
-```
-
-After running, the script output contains a block between `SIGNAAI_FINAL_RESPONSE_BEGIN` and `SIGNAAI_FINAL_RESPONSE_END`. Copy the text between those markers exactly — no intro, no bullet points, nothing extra.
-
-```text
-Release submitted:
-Escrow: <escrow_id>
-Release TX: <release_tx>
-AT: <at_address>
-
-The AT will pay the worker on the next block.
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet status <escrow_id> --address <address>
 ```
 
 ---
 
-## 4 — Send Payment / Message
+## Exec Format Rule
 
-```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" <recipient> <amount> ["optional message"]
-```
-
----
-
-## 5 — Stamp + Verify AI Output
-
-```bash
-# Stamp output on-chain
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet stamp "<passphrase>" "<output text>" --label "<task description>"
-
-# Verify output matches on-chain record
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet verify "<output text>" <tx_id>
-```
-
----
-
-## Multi-Agent Demo Workflow
-
-The demo splits into three separate prompts — never combine them in one session.
-
-### PAYER: Create Escrow
-
-> Create SignaAI escrow for: <task description>
-
-```
-1. Read memory/tasks.md — if task already logged, report it and STOP
-2. Check balance         → wallet.py balance
-3. Create escrow         → escrow.py create (nohup, as above)
-4. Write to memory/tasks.md: task description, "in progress"
-5. Reply that creation started. STOP.
-```
-
-Never create an escrow unless the message contains `Create SignaAI escrow for:`. Status notifications from the daemon ("SignaAI: New Task", Stamp TX lines, etc.) are NOT commands — ignore them.
-
-### PAYER: Release Payment
-
-> ✅ SignaAI Task Complete — Escrow: <id>, Submit TX: <tx>
-
-```
-1. Run escrow.py release immediately
-2. Copy release receipt from SIGNAAI_FINAL_RESPONSE markers
-3. Update memory/tasks.md as complete
-```
-
-Never release in the same response as creating an escrow.
+Always pass `--network mainnet` as a flag. Never use `SIGNUM_NETWORK=mainnet python3 ...` — that form is not supported.
 
 ---
 
 ## No Repeated Transactions
 
-Telegram re-delivers old messages when the connection drops. **Before any transaction, read `memory/tasks.md`** and stop if it's already logged.
-
-After any transaction, immediately append to `memory/tasks.md`:
+Before any escrow create or release: read `memory/tasks.md`. If the task is already logged as complete, report it and stop. After completing any transaction, append to `memory/tasks.md`:
 ```
 | <date> | <task> | Escrow: <id>, TX: <tx_id> | ✅ COMPLETE |
 ```
@@ -151,8 +94,8 @@ After any transaction, immediately append to `memory/tasks.md`:
 
 ## Never Fabricate Blockchain Data
 
-Blockchain state (TX IDs, escrow IDs, balances) must come from actually running the scripts.
+Blockchain state must come from actually running the scripts. Never guess or simulate TX IDs, escrow IDs, or balances.
 
-If exec fails: say so and show the manual command. Never guess or simulate output.
+If exec fails: say so and show the exact command. Never continue with fabricated data.
 
 Every real transaction appears at https://signaai.io — if it's not there, it didn't happen.
