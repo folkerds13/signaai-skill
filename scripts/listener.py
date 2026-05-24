@@ -157,8 +157,8 @@ def load_state():
             with open(STATE_FILE) as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
-            return {"processed_txs": []}
-    return {"processed_txs": []}
+            pass
+    return {"last_seen_timestamp": 0, "recent_txs": []}
 
 def save_state(state):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -1151,12 +1151,15 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
     if not tx_id:
         return False
 
-    processed = set(state.get("processed_txs", []))
-    if tx_id in processed:
+    recent = set(state.get("recent_txs", []))
+    if tx_id in recent:
         return False
 
-    processed.add(tx_id)
-    state["processed_txs"] = list(processed)[-500:]
+    recent.add(tx_id)
+    state["recent_txs"] = list(recent)[-100:]
+    tx_ts = tx.get("timestamp", 0)
+    if tx_ts > state.get("last_seen_timestamp", 0):
+        state["last_seen_timestamp"] = tx_ts
 
     recipient = tx.get("recipientRS", tx.get("recipient", ""))
     if address not in recipient:
@@ -1416,6 +1419,7 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
     api = get_api(network)
     result = api.get("getAccountTransactions",
                      account=address,
+                     timestamp=state.get("last_seen_timestamp", 0),
                      firstIndex="0",
                      lastIndex="49")
     if not ok(result):
