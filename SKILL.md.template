@@ -28,7 +28,7 @@ if os.path.exists(queue_file):
 items.append({
     "id": str(uuid.uuid4()),
     "task": "<TASK_DESCRIPTION>",
-    "worker_address": "S-44S7-32XB-5DM5-5AL3K",
+    "worker_address": "<WORKER_ADDRESS>",
     "amount": 1.0,
     "status": "pending",
     "queued_at": datetime.datetime.utcnow().isoformat() + "Z"

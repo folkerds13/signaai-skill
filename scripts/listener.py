@@ -1448,11 +1448,11 @@ def process_payer_queue(network, worker_cfg, tg_token, tg_chat_id):
     from escrow import create_escrow
 
     passphrase   = worker_cfg["passphrase"]
-    worker_addr  = "S-44S7-32XB-5DM5-5AL3K"  # Sieka — default payer target
+    default_addr = str(worker_cfg.get("default_worker", "")).strip()
 
     for item in pending:
         task        = item.get("task", "").strip()
-        target_addr = item.get("worker_address", worker_addr).strip() or worker_addr
+        target_addr = item.get("worker_address", "").strip() or default_addr
         amount      = float(item.get("amount", 1.0))
         item_id     = item.get("id", "?")
 
