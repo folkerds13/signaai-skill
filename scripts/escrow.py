@@ -52,6 +52,7 @@ RELEASE_LOG_FILE      = os.path.expanduser("~/.openclaw/workspace/signaai-releas
 PENDING_RELEASES_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
 PREIMAGE_DIR          = os.path.expanduser("~/.signaai/preimages")
 RECEIPT_FILE          = os.path.expanduser("~/.openclaw/workspace/signaai-last-escrow-receipt.txt")
+LOG_FILE              = os.path.expanduser("~/.openclaw/logs/escrow-create.log")
 
 # Escrow states
 STATE_CREATED   = "CREATED"
@@ -210,23 +211,59 @@ def _load_tg_config():
         return None, None
 
 
+def _log(msg):
+    """Append a timestamped line to LOG_FILE."""
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, 'a') as f:
+            f.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _resolve_passphrase(passphrase):
+    """
+    Resolve '@worker' sentinel to the actual passphrase from signaai-worker.json.
+    Pass '@worker' in place of a literal passphrase — the script reads it from disk.
+    """
+    if passphrase and str(passphrase).strip().startswith("@"):
+        key = passphrase.strip()[1:]  # strip the '@'
+        worker_files = [
+            os.path.expanduser("~/.openclaw/signaai-worker.json"),
+            os.path.expanduser("~/.openclaw/workspace/signaai-worker.json"),
+        ]
+        for path in worker_files:
+            if os.path.exists(path):
+                with open(path) as f:
+                    cfg = json.load(f)
+                val = cfg.get(key) or cfg.get("passphrase")
+                if val:
+                    return val
+        raise SystemExit(f"Error: '@{key}' sentinel used but no passphrase found in signaai-worker.json")
+    return passphrase
+
+
 def _send_telegram(token, chat_id, message):
-    """Send a Telegram message. Silently no-ops if not configured."""
+    """Send a Telegram message. Logs errors to LOG_FILE if sending fails."""
     if not token or not chat_id:
+        _log(f"Telegram: not configured (token={bool(token)}, chat_id={bool(chat_id)})")
         return
     import urllib.request, urllib.parse
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
         data = urllib.parse.urlencode(payload).encode()
-        urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10)
-    except Exception:
+        resp = urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10)
+        _log(f"Telegram: sent OK (chat_id={chat_id})")
+    except Exception as e:
+        _log(f"Telegram: Markdown send failed ({e}), retrying plain text")
         try:
             payload = {"chat_id": chat_id, "text": message}
             data = urllib.parse.urlencode(payload).encode()
             urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10)
-        except Exception:
-            pass
+            _log(f"Telegram: plain text send OK")
+        except Exception as e2:
+            _log(f"Telegram: both sends failed: {e2}")
 
 
 def _store_preimage(escrow_id, preimage, at_address, deploy_tx):
@@ -339,7 +376,8 @@ def _read_telegram_config():
 # ── Core Functions ────────────────────────────────────────────────────────────
 
 def create_escrow(payer_passphrase, worker_address, amount_signa,
-                  task_description, deadline_hours=24, network=None):
+                  task_description, deadline_hours=24, network=None,
+                  _skip_dedup=False):
     """
     Create an escrow agreement on-chain.
 
@@ -354,15 +392,16 @@ def create_escrow(payer_passphrase, worker_address, amount_signa,
     if not payer_passphrase or not str(payer_passphrase).strip():
         return None, "Payer passphrase cannot be empty"
 
-    # Hard dedup — refuse to create a second escrow for the same task within 1 hour
-    # Write "pending" BEFORE any blockchain calls — prevents race condition with parallel tool calls
-    existing = _dedup_check(task_description)
-    if existing and existing != "pending":
-        print(f"  Duplicate detected — escrow {existing} already created for this task.")
-        return {"escrow_id": existing, "duplicate": True}, None
-    if existing == "pending":
-        return None, "Escrow creation already in progress for this task — wait and retry."
-    _dedup_record(task_description, "pending")  # reserve slot immediately
+    if not _skip_dedup:
+        # Hard dedup — refuse to create a second escrow for the same task within 1 hour
+        # Write "pending" BEFORE any blockchain calls — prevents race condition with parallel tool calls
+        existing = _dedup_check(task_description)
+        if existing and existing != "pending":
+            print(f"  Duplicate detected — escrow {existing} already created for this task.")
+            return {"escrow_id": existing, "duplicate": True}, None
+        if existing == "pending":
+            return None, "Escrow creation already in progress for this task — wait and retry."
+        _dedup_record(task_description, "pending")  # reserve slot immediately
 
     api = get_api(network)
 
@@ -928,6 +967,10 @@ def main():
     p.add_argument("task_description")
     p.add_argument("--deadline-hours", type=int, default=24)
 
+    # create-bg (internal — spawned by create to run AT deployment in background)
+    p = sub.add_parser("create-bg", help="(internal) background AT deployment")
+    p.add_argument("json_file")
+
     # submit
     p = sub.add_parser("submit", help="Worker submits completed result")
     p.add_argument("worker_passphrase")
@@ -961,15 +1004,85 @@ def main():
     os.environ["SIGNUM_NETWORK"] = args.network
 
     if args.cmd == "create":
-        print(f"Creating escrow on {args.network}...")
+        import subprocess, tempfile
+        args.payer_passphrase = _resolve_passphrase(args.payer_passphrase)
+        print(f"Creating escrow on {args.network}...", flush=True)
+
+        # ── Quick setup (~2s): dedup check + ID derivation ────────────────────
+        existing = _dedup_check(args.task_description)
+        if existing and existing != "pending":
+            print(f"Escrow {existing} already exists for this task (dedup).")
+            sys.exit(0)
+        if existing == "pending":
+            print(f"Error: Escrow creation already in progress — wait and retry.")
+            sys.exit(1)
+
+        payer_address, err = get_my_address(args.payer_passphrase, args.network)
+        if err:
+            print(f"Error: Could not derive payer address: {err}")
+            sys.exit(1)
+
+        api = get_api(args.network)
+        status = api.get("getBlockchainStatus")
+        if not ok(status):
+            print(f"Error: Could not get blockchain status")
+            sys.exit(1)
+
+        current_block = int(status.get("numberOfBlocks", 0))
+        deadline_block = current_block + (args.deadline_hours * BLOCKS_PER_HOUR)
+        task_hash = hashlib.sha256(args.task_description.encode()).hexdigest()
+        timestamp_bucket = int(time.time() // 3600) * 3600
+        escrow_id = hashlib.sha256(
+            f"{payer_address}:{task_hash}:{timestamp_bucket}".encode()
+        ).hexdigest()[:16]
+
+        _dedup_record(args.task_description, "pending")
+
+        # ── Print escrow ID now — this is what the model sees ─────────────────
+        print(f"Escrow ID: {escrow_id}", flush=True)
+        print(f"AT deploying in background — receipt via Telegram in ~6-10 min.", flush=True)
+
+        # ── Write setup to temp file for background process ───────────────────
+        setup = {
+            "network": args.network,
+            "payer_passphrase": args.payer_passphrase,
+            "worker_address": args.worker_address,
+            "amount": args.amount,
+            "task_description": args.task_description,
+            "deadline_hours": args.deadline_hours,
+        }
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.json', prefix='signaai-', delete=False)
+        json.dump(setup, tmp)
+        tmp.close()
+
+        subprocess.Popen(
+            [sys.executable, __file__, '--network', args.network, 'create-bg', tmp.name],
+            start_new_session=True,
+            stdout=open(LOG_FILE, 'a'),
+            stderr=open(LOG_FILE, 'a'),
+            close_fds=True,
+        )
+        sys.exit(0)
+
+    elif args.cmd == "create-bg":
+        # Background AT deployment — spawned by `create` after printing the escrow ID
+        try:
+            with open(args.json_file) as f:
+                setup = json.load(f)
+            os.unlink(args.json_file)
+        except Exception as e:
+            print(f"Error reading setup file: {e}", flush=True)
+            sys.exit(1)
         result, err = create_escrow(
-            args.payer_passphrase, args.worker_address, args.amount,
-            args.task_description, args.deadline_hours, args.network
+            setup['payer_passphrase'], setup['worker_address'], setup['amount'],
+            setup['task_description'], setup['deadline_hours'], setup['network'],
+            _skip_dedup=True,
         )
         if err:
-            print(f"Error: {err}")
+            print(f"Error: {err}", flush=True)
         else:
-            receipt = _format_escrow_receipt(result, deadline_hours=args.deadline_hours)
+            receipt = _format_escrow_receipt(result, deadline_hours=setup['deadline_hours'])
             _store_last_receipt(receipt)
             tg_token, tg_chat_id = _load_tg_config()
             _send_telegram(tg_token, tg_chat_id,
@@ -977,12 +1090,13 @@ def main():
                            f"ID: `{result['escrow_id']}`\n"
                            f"Record TX: `{result.get('record_tx') or result.get('create_tx')}`\n"
                            f"Fund TX: `{result.get('fund_tx')}`\n\n"
-                           f"Task sent to worker ({float(args.amount):g} SIGNA, "
-                           f"{float(args.deadline_hours):g}h deadline).")
+                           f"Task sent to worker ({float(setup['amount']):g} SIGNA, "
+                           f"{float(setup['deadline_hours']):g}h deadline).")
             print()
             print(receipt, flush=True)
 
     elif args.cmd == "submit":
+        args.worker_passphrase = _resolve_passphrase(args.worker_passphrase)
         sources = [s.strip() for s in args.sources.split(",") if s.strip()]
         print(f"Submitting result for escrow {args.escrow_id}...")
         result, err = submit_result(
@@ -1000,6 +1114,7 @@ def main():
             print(f"  Submit TX:   {result['submit_tx']}")
 
     elif args.cmd == "release":
+        args.operator_passphrase = _resolve_passphrase(args.operator_passphrase)
         print(f"Releasing escrow {args.escrow_id}...")
         result, err = release_payment(
             args.operator_passphrase, args.escrow_id, args.network
