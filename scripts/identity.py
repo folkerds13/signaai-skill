@@ -48,7 +48,7 @@ def register_agent(passphrase, agent_name, capabilities=None, version="1.0",
         return None, f"Could not derive address: {err}"
 
     name_slug = agent_name.lower().replace(' ', '').replace('-', '').replace('_', '')
-    name_hash = hashlib.sha256(agent_name.encode()).hexdigest()[:8]
+    name_hash = hashlib.sha256(name_slug.encode()).hexdigest()[:8]
     alias = f"{ALIAS_PREFIX}{name_slug}-{name_hash}"
 
     metadata = {
@@ -98,7 +98,7 @@ def lookup_agent(agent_name, network=None):
     """
     api = get_api(network)
     name_slug = agent_name.lower().replace(' ', '').replace('-', '').replace('_', '')
-    name_hash = hashlib.sha256(agent_name.encode()).hexdigest()[:8]
+    name_hash = hashlib.sha256(name_slug.encode()).hexdigest()[:8]
     alias = f"{ALIAS_PREFIX}{name_slug}-{name_hash}"
 
     result = api.get("getAlias", aliasName=alias)
@@ -134,7 +134,7 @@ def verify_agent(agent_name, network=None):
     """
     api = get_api(network)
     name_slug = agent_name.lower().replace(' ', '').replace('-', '').replace('_', '')
-    name_hash = hashlib.sha256(agent_name.encode()).hexdigest()[:8]
+    name_hash = hashlib.sha256(name_slug.encode()).hexdigest()[:8]
     alias = f"{ALIAS_PREFIX}{name_slug}-{name_hash}"
 
     alias_result = api.get("getAlias", aliasName=alias)
