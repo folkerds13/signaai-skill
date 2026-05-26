@@ -66,6 +66,10 @@ PENDING_RELEASES_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-pen
 PENDING_AUTO_RELEASE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-auto-release-queue.json")
 DISPUTE_FILE             = os.path.expanduser("~/.openclaw/workspace/signaai-disputes.json")
 LISTENER_LOCK_DIR        = os.path.expanduser("~/.openclaw/workspace")
+PAYER_QUEUE_FILE         = os.path.join(
+    os.environ.get("SIGNAAI_STATE_DIR", os.path.expanduser("~/.openclaw/workspace")),
+    "signaai-payer-queue.json"
+)
 
 REVIEW_MINUTES = int(os.environ.get("SIGNAAI_REVIEW_MINUTES", "10"))
 AUTO_RELEASE   = os.environ.get("SIGNAAI_AUTO_RELEASE", "true").lower() == "true"
@@ -1413,6 +1417,91 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
 
 # ── Polling fallback ──────────────────────────────────────────────────────────
 
+def _load_payer_queue():
+    if os.path.exists(PAYER_QUEUE_FILE):
+        try:
+            with open(PAYER_QUEUE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+
+def _save_payer_queue(items):
+    tmp = PAYER_QUEUE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(items, f, indent=2)
+    os.replace(tmp, PAYER_QUEUE_FILE)
+
+
+def process_payer_queue(network, tg_token, tg_chat_id):
+    """Create on-chain escrows for items written to the payer queue by queue_escrow.py."""
+    items = _load_payer_queue()
+    pending = [i for i in items if i.get("status") == "pending"]
+    if not pending:
+        return
+
+    escrow_script = os.path.join(os.path.dirname(__file__), "escrow.py")
+    changed = False
+
+    for item in items:
+        if item.get("status") != "pending":
+            continue
+
+        task        = item.get("task", "")
+        worker      = item.get("worker_address", "")
+        amount      = str(item.get("amount", 1.0))
+        item_id     = item.get("id", "?")
+
+        log(f"Queue: creating escrow for {item_id[:8]}... worker={worker}")
+
+        try:
+            result = subprocess.run(
+                [sys.executable, escrow_script, "--network", network,
+                 "create", "@worker", worker, amount, task, "--deadline-hours", "24"],
+                capture_output=True, text=True, timeout=300
+            )
+        except subprocess.TimeoutExpired:
+            log(f"Queue: escrow create timed out for {item_id[:8]}")
+            item["status"] = "error"
+            item["error"] = "timeout"
+            changed = True
+            continue
+        except Exception as exc:
+            log(f"Queue: escrow create exception for {item_id[:8]}: {exc}")
+            item["status"] = "error"
+            item["error"] = str(exc)
+            changed = True
+            continue
+
+        output = (result.stdout or "") + (result.stderr or "")
+
+        if result.returncode != 0:
+            log(f"Queue: escrow create failed for {item_id[:8]}: {output.strip()[:200]}")
+            item["status"] = "error"
+            item["error"] = output.strip()[:500]
+            changed = True
+            continue
+
+        escrow_id = None
+        for line in output.splitlines():
+            if line.startswith("ID: "):
+                escrow_id = line[4:].strip()
+                break
+
+        item["status"]    = "created"
+        item["escrow_id"] = escrow_id or "unknown"
+        changed = True
+
+        log(f"Queue: escrow created {escrow_id or 'unknown'} for {item_id[:8]}")
+        send_telegram(tg_token, tg_chat_id,
+                      f"🔐 Escrow Created\nID: `{escrow_id}`\nTask: {task[:120]}",
+                      kind="payer-queue")
+
+    if changed:
+        _save_payer_queue(items)
+
+
 def poll_once(address, network, state, tg_token, tg_chat_id,
               hook_token=None, hook_path="/hooks", gw_port=18789,
               worker_cfg=None):
@@ -1436,6 +1525,7 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
         log("No new tasks")
     check_pending_releases(network, tg_token, tg_chat_id)
     check_auto_releases(network, tg_token, tg_chat_id)
+    process_payer_queue(network, tg_token, tg_chat_id)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
