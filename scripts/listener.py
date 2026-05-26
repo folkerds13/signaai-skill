@@ -1459,7 +1459,7 @@ def process_payer_queue(network, tg_token, tg_chat_id):
             result = subprocess.run(
                 [sys.executable, escrow_script, "--network", network,
                  "create", "@worker", worker, amount, task, "--deadline-hours", "24"],
-                capture_output=True, text=True, timeout=300
+                capture_output=True, text=True, timeout=660
             )
         except subprocess.TimeoutExpired:
             log(f"Queue: escrow create timed out for {item_id[:8]}")
@@ -1483,20 +1483,30 @@ def process_payer_queue(network, tg_token, tg_chat_id):
             changed = True
             continue
 
+        # Parse escrow ID — try stdout first, then the receipt file escrow.py writes
         escrow_id = None
         for line in output.splitlines():
-            if line.startswith("ID: "):
-                escrow_id = line[4:].strip()
+            stripped = line.strip()
+            if stripped.startswith("ID: "):
+                escrow_id = stripped[4:].strip()
                 break
+        if not escrow_id:
+            receipt_file = os.path.expanduser("~/.openclaw/workspace/signaai-last-escrow-receipt.txt")
+            try:
+                with open(receipt_file) as rf:
+                    for line in rf:
+                        if line.strip().startswith("ID: "):
+                            escrow_id = line.strip()[4:].strip()
+                            break
+            except OSError:
+                pass
 
         item["status"]    = "created"
         item["escrow_id"] = escrow_id or "unknown"
         changed = True
 
         log(f"Queue: escrow created {escrow_id or 'unknown'} for {item_id[:8]}")
-        send_telegram(tg_token, tg_chat_id,
-                      f"🔐 Escrow Created\nID: `{escrow_id}`\nTask: {task[:120]}",
-                      kind="payer-queue")
+        # escrow.py sends its own Telegram receipt — no duplicate notification needed
 
     if changed:
         _save_payer_queue(items)
