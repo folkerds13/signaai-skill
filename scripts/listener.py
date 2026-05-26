@@ -49,8 +49,7 @@ import threading
 import time
 import urllib.request
 import urllib.parse
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 from signum_api import get_api, ts, ok, NODES, USER_AGENT, fee_message
@@ -58,27 +57,15 @@ from protocol import parse_message, EscrowMessage
 
 ESCROW_ASSIGN_PREFIX = "ESCROW:ASSIGN"
 ESCROW_RESULT_PREFIX = "ESCROW:RESULT:"
-
-# State directory — override with SIGNAAI_STATE_DIR for non-OpenClaw setups
-_STATE_DIR = os.environ.get(
-    "SIGNAAI_STATE_DIR",
-    os.path.expanduser("~/.openclaw/workspace")
-)
-
-STATE_FILE            = os.path.join(_STATE_DIR, "signaai-listener-state.json")
-TRIGGER_FILE          = os.path.join(_STATE_DIR, "signaai-pending-tasks.json")
+STATE_FILE            = os.path.expanduser("~/.openclaw/workspace/signaai-listener-state.json")
+TRIGGER_FILE          = os.path.expanduser("~/.openclaw/workspace/signaai-pending-tasks.json")
 TRIGGER_LOCK          = TRIGGER_FILE + ".lock"
-RESULT_INBOX_FILE     = os.path.join(_STATE_DIR, "signaai-result-inbox.json")
+RESULT_INBOX_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-result-inbox.json")
 RESULT_INBOX_LOCK     = RESULT_INBOX_FILE + ".lock"
-PENDING_RELEASES_FILE    = os.path.join(_STATE_DIR, "signaai-pending-releases.json")
-PENDING_AUTO_RELEASE_FILE = os.path.join(_STATE_DIR, "signaai-auto-release-queue.json")
-DISPUTE_FILE             = os.path.join(_STATE_DIR, "signaai-disputes.json")
-LISTENER_LOCK_DIR        = _STATE_DIR
-PAYER_QUEUE_FILE         = os.path.join(_STATE_DIR, "signaai-payer-queue.json")
-_TG_OFFSET_FILE          = os.path.join(_STATE_DIR, "signaai-tg-trigger-offset.json")
-
-ESCROW_TRIGGER_PREFIX = "Create SignaAI escrow for:"
-TG_TRIGGER_POLL_SECS  = 3
+PENDING_RELEASES_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
+PENDING_AUTO_RELEASE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-auto-release-queue.json")
+DISPUTE_FILE             = os.path.expanduser("~/.openclaw/workspace/signaai-disputes.json")
+LISTENER_LOCK_DIR        = os.path.expanduser("~/.openclaw/workspace")
 
 REVIEW_MINUTES = int(os.environ.get("SIGNAAI_REVIEW_MINUTES", "10"))
 AUTO_RELEASE   = os.environ.get("SIGNAAI_AUTO_RELEASE", "true").lower() == "true"
@@ -1394,7 +1381,6 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
                 syncing = local < total
                 if not syncing:
                     log(f"Block {local} pushed")
-                    process_payer_queue(network, worker_cfg, tg_token, tg_chat_id)
                     check_pending_releases(network, tg_token, tg_chat_id)
                     check_auto_releases(network, tg_token, tg_chat_id)
                 elif local % 10000 == 0:
@@ -1425,195 +1411,11 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
             pass
 
 
-# ── Payer queue processor ─────────────────────────────────────────────────────
-
-def _load_payer_queue():
-    if os.path.exists(PAYER_QUEUE_FILE):
-        try:
-            with open(PAYER_QUEUE_FILE) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return []
-    return []
-
-def _save_payer_queue(items):
-    os.makedirs(os.path.dirname(PAYER_QUEUE_FILE), exist_ok=True)
-    tmp = PAYER_QUEUE_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(items, f, indent=2)
-    os.replace(tmp, PAYER_QUEUE_FILE)
-
-def _load_tg_offset():
-    try:
-        with open(_TG_OFFSET_FILE) as f:
-            return json.load(f).get("offset", 0)
-    except Exception:
-        return 0
-
-def _save_tg_offset(offset):
-    with open(_TG_OFFSET_FILE, "w") as f:
-        json.dump({"offset": offset}, f)
-
-def _queue_escrow_trigger(task, worker_addr, amount=1.0):
-    """Write a pending escrow entry to the payer queue. Returns False if duplicate."""
-    items = _load_payer_queue()
-    for item in items:
-        if item.get("task") == task and item.get("status") == "pending":
-            return False
-    items.append({
-        "id":             str(uuid.uuid4()),
-        "task":           task,
-        "worker_address": worker_addr,
-        "amount":         amount,
-        "status":         "pending",
-        "queued_at":      datetime.now(timezone.utc).isoformat(),
-    })
-    _save_payer_queue(items)
-    return True
-
-def _tg_current_offset(tg_token):
-    """Get the current latest update_id from Telegram to use as starting offset."""
-    try:
-        params = urllib.parse.urlencode({"offset": -1, "limit": 1, "timeout": 0})
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{tg_token}/getUpdates?{params}",
-            headers={"User-Agent": USER_AGENT}
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        updates = data.get("result", [])
-        if updates:
-            return updates[-1]["update_id"] + 1
-    except Exception:
-        pass
-    return 0
-
-def monitor_telegram_triggers(tg_token, tg_chat_id, worker_cfg):
-    """
-    Background thread: poll Telegram every 3s for 'Create SignaAI escrow for:'
-    messages and write them directly to the payer queue — no model involvement.
-
-    Timing: OpenClaw's long poll (timeout=30) holds the connection while the
-    model responds (~5-10s). This thread polls with timeout=0 during that window
-    and intercepts the message before OpenClaw acknowledges it. 409 Conflict is
-    expected when OpenClaw's long poll is active; it resolves in the gap after
-    a message arrives.
-    """
-    if not tg_token or not worker_cfg:
-        return
-    default_worker = str(worker_cfg.get("default_worker", "")).strip()
-    if not default_worker:
-        log("[tg-trigger] No default_worker in config — trigger monitor disabled")
-        return
-
-    saved = _load_tg_offset()
-    # On first start (offset=0), fast-forward to current position so we don't
-    # re-process historical messages.
-    if saved == 0:
-        saved = _tg_current_offset(tg_token)
-        _save_tg_offset(saved)
-    offset = saved
-    log(f"[tg-trigger] Started (offset={offset}, poll={TG_TRIGGER_POLL_SECS}s)")
-
-    while True:
-        try:
-            params = urllib.parse.urlencode({"offset": offset, "timeout": 0})
-            req = urllib.request.Request(
-                f"https://api.telegram.org/bot{tg_token}/getUpdates?{params}",
-                headers={"User-Agent": USER_AGENT}
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
-            if data.get("ok"):
-                for update in data.get("result", []):
-                    uid  = update["update_id"]
-                    msg  = update.get("message", {})
-                    text = (msg.get("text") or "").strip()
-                    chat = str(msg.get("chat", {}).get("id", ""))
-                    if chat == str(tg_chat_id) and text.startswith(ESCROW_TRIGGER_PREFIX):
-                        task = text[len(ESCROW_TRIGGER_PREFIX):].strip()
-                        if task:
-                            queued = _queue_escrow_trigger(task, default_worker)
-                            if queued:
-                                log(f"[tg-trigger] Queued: {task[:60]}")
-                                send_telegram(tg_token, tg_chat_id,
-                                    "✅ Task queued. The daemon will create the escrow"
-                                    " — receipt via Telegram in ~6–10 minutes.")
-                            else:
-                                log(f"[tg-trigger] Duplicate skipped: {task[:40]}")
-                    offset = max(offset, uid + 1)
-                _save_tg_offset(offset)
-        except urllib.error.HTTPError as e:
-            if e.code != 409:  # 409 = OpenClaw long poll active; expected, silent
-                log(f"[tg-trigger] HTTP {e.code}: {e}")
-        except Exception as e:
-            log(f"[tg-trigger] Poll error: {e}")
-        time.sleep(TG_TRIGGER_POLL_SECS)
-
-
-def process_payer_queue(network, worker_cfg, tg_token, tg_chat_id):
-    """
-    Read signaai-payer-queue.json and create any pending escrows directly in Python.
-    The LLM writes tasks here; the daemon runs escrow.py deterministically — no hallucination.
-    """
-    if not worker_cfg:
-        return
-
-    items = _load_payer_queue()
-    pending = [i for i in items if i.get("status") == "pending"]
-    if not pending:
-        return
-
-    sys.path.insert(0, os.path.dirname(__file__))
-    from escrow import create_escrow
-
-    passphrase   = worker_cfg["passphrase"]
-    default_addr = str(worker_cfg.get("default_worker", "")).strip()
-
-    for item in pending:
-        task        = item.get("task", "").strip()
-        target_addr = item.get("worker_address", "").strip() or default_addr
-        amount      = float(item.get("amount", 1.0))
-        item_id     = item.get("id", "?")
-
-        if not task:
-            item["status"] = "error"
-            item["error"]  = "Missing task description"
-            continue
-
-        log(f"Payer queue [{item_id[:8]}]: creating escrow for '{task[:60]}...'")
-        escrow, err = create_escrow(passphrase, target_addr, amount, task,
-                                    deadline_hours=24, network=network)
-        if err:
-            log(f"Payer queue [{item_id[:8]}]: creation failed — {err}")
-            item["status"] = "error"
-            item["error"]  = err
-            send_telegram(tg_token, tg_chat_id, f"❌ *Escrow creation failed*\n{err}")
-            continue
-
-        escrow_id = escrow["escrow_id"]
-        if escrow.get("duplicate"):
-            log(f"Payer queue [{item_id[:8]}]: duplicate — existing escrow {escrow_id}")
-            item["status"]    = "duplicate"
-            item["escrow_id"] = escrow_id
-        else:
-            log(f"Payer queue [{item_id[:8]}]: escrow created — {escrow_id}")
-            item["status"]    = "created"
-            item["escrow_id"] = escrow_id
-            send_telegram(tg_token, tg_chat_id,
-                          f"\U0001f510 *Escrow Created*\nID: `{escrow_id}`\nTask: {task[:120]}")
-
-    _save_payer_queue(items)
-
-
 # ── Polling fallback ──────────────────────────────────────────────────────────
 
 def poll_once(address, network, state, tg_token, tg_chat_id,
               hook_token=None, hook_path="/hooks", gw_port=18789,
               worker_cfg=None):
-    # Check payer queue first — create any pending escrows without LLM involvement
-    process_payer_queue(network, worker_cfg, tg_token, tg_chat_id)
-
     api = get_api(network)
     result = api.get("getAccountTransactions",
                      account=address,
@@ -1706,14 +1508,6 @@ def main():
         poll_once(args.address, args.network, state, tg_token, tg_chat_id,
                   hook_token, hook_path, gw_port, worker_cfg)
         return
-
-    # Telegram trigger monitor — intercepts "Create SignaAI escrow for:" before the model
-    tg_trigger_thread = threading.Thread(
-        target=monitor_telegram_triggers,
-        args=(tg_token, tg_chat_id, worker_cfg),
-        daemon=True, name="tg-trigger"
-    )
-    tg_trigger_thread.start()
 
     if args.no_websocket:
         print(f"  Connection:  polling every {args.poll_interval}s", flush=True)
