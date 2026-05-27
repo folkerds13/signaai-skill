@@ -1887,16 +1887,6 @@ def main():
         print(f"  Mode:        agent trigger (configure {WORKER_CFG} for autonomous)", flush=True)
     print(flush=True)
 
-    # Start Telegram callback listener as a background thread
-    if tg_token:
-        tg_thread = threading.Thread(
-            target=run_tg_callback_thread,
-            args=(tg_token, args.network, worker_cfg),
-            daemon=True,
-            name="tg-callbacks",
-        )
-        tg_thread.start()
-
     state = load_state()
 
     # On startup: re-queue any tasks that were pending when the daemon last stopped
