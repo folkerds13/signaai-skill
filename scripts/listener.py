@@ -512,14 +512,18 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
         log(f"[{escrow_id}] Payer notified with delivered result")
         _queue_auto_release(escrow_id, record)
 
-        # Send rating prompt with inline keyboard so Mike can rate the response
-        rating_msg_id = send_rating_keyboard(tg_token, tg_chat_id, escrow_id, agent_rating)
+        # Send plain-text rating prompt
+        agent_hint = f"Agent assessment: {agent_rating}/5\n" if agent_rating else ""
+        send_telegram(tg_token, tg_chat_id,
+            f"⭐ *Rate this response*\n"
+            f"{agent_hint}"
+            f"Reply: `Rate escrow {escrow_id} <1-5>`",
+            kind=f"rating_prompt:{escrow_id}")
         store_pending_rating(
             escrow_id,
             worker=record.get("worker", ""),
             result_hash=record.get("result_hash", ""),
             agent_rating=agent_rating,
-            rating_msg_id=rating_msg_id,
         )
 
     return delivered

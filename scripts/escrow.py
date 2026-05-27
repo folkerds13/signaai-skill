@@ -1008,6 +1008,14 @@ def main():
 
     # receipt
     p = sub.add_parser("receipt", help="Print canonical escrow creation receipt")
+
+    p = sub.add_parser("rate", help="Rate a worker after a completed escrow")
+    p.add_argument("payer_passphrase", metavar="PASSPHRASE",
+                   help="passphrase or @worker")
+    p.add_argument("escrow_id")
+    p.add_argument("worker_address")
+    p.add_argument("rating", type=int, choices=[1, 2, 3, 4, 5])
+    p.add_argument("--result-hash", default="")
     p.add_argument("escrow_id")
     p.add_argument("--address", required=True, help="Payer address to scan")
 
@@ -1195,6 +1203,24 @@ def main():
             receipt = _format_escrow_receipt(result)
             _store_last_receipt(receipt)
             print(receipt)
+    elif args.cmd == "rate":
+        args.payer_passphrase = _resolve_passphrase(args.payer_passphrase)
+        api = get_api(args.network)
+        result_hash = args.result_hash or ""
+        msg = f"TASK_RATING:v1:{args.escrow_id}:{args.worker_address}:{result_hash}:{args.rating}"
+        sent = api.post("sendMessage",
+                        secretPhrase=args.payer_passphrase,
+                        recipient=args.worker_address,
+                        message=msg,
+                        messageIsText="true",
+                        feeNQT=735000)
+        if not ok(sent):
+            print(f"Error: {sent.get('error', 'unknown')}")
+            sys.exit(1)
+        tx_id = sent.get("transaction", "unknown")
+        stars = "⭐" * args.rating + "☆" * (5 - args.rating)
+        print(f"Rating submitted: {stars} ({args.rating}/5)")
+        print(f"TX: {tx_id}")
     else:
         parser.print_help()
 
