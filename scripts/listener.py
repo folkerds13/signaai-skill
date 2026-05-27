@@ -471,15 +471,28 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
     status_line = "verified" if hash_ok and proof_ok else "verification failed"
     result_preview = result_text[:3000] + "..." if len(result_text) > 3000 else result_text
 
-    # Look up agent_rating from the pending task record (set during autonomous execution)
+    # Payer-side agent rating: independent quality assessment before showing result to Mike
     agent_rating = None
+    task_description = ""
     try:
         for task in load_pending():
             if task.get("escrow_id") == escrow_id:
-                agent_rating = task.get("agent_rating")
+                task_description = task.get("task_description", "")
                 break
     except Exception:
         pass
+    if task_description:
+        try:
+            llm = load_openclaw_llm()
+            if llm:
+                provider, model_id, base_url, api_key = llm
+                log(f"[{escrow_id}] Payer agent rating result quality...")
+                agent_rating = rate_result_quality(task_description, result_text, api_key,
+                                                   provider, model=model_id, base_url=base_url)
+                if agent_rating:
+                    log(f"[{escrow_id}] Agent rating: {agent_rating}/5")
+        except Exception as e:
+            log(f"[{escrow_id}] Agent rating skipped: {e}")
 
     delivered = send_telegram(tg_token, tg_chat_id, (
         f"✅ *SignaAI Task Complete*\n"
@@ -955,31 +968,13 @@ def _tg_post(token, method, **params):
         return {}
 
 
-def poll_telegram_callbacks(token, network, worker_cfg):
+def _handle_tg_updates(updates, token, network, worker_cfg, offset):
     """
-    Poll getUpdates for callback_query events from inline keyboard rating buttons.
-    When user clicks ⭐N, send TASK_RATING on-chain and confirm via Telegram.
+    Process a batch of Telegram updates. Returns the new offset to save.
+    Handles signaai_rate callback_query events from the inline rating keyboard.
     """
-    if not token:
-        return
-
-    offset = _load_tg_offset()
-    url = (f"https://api.telegram.org/bot{token}/getUpdates"
-           f"?offset={offset}&timeout=0&allowed_updates=callback_query")
-    try:
-        resp = json.loads(urllib.request.urlopen(
-            urllib.request.Request(url), timeout=15
-        ).read())
-    except Exception as e:
-        log(f"Telegram getUpdates failed: {e}")
-        return
-
-    updates = resp.get("result", [])
-    if not updates:
-        return
-
-    ratings  = load_pending_ratings()
-    api      = get_api(network)
+    ratings    = load_pending_ratings()
+    api        = get_api(network)
     passphrase = (worker_cfg or {}).get("passphrase", "")
 
     for update in updates:
@@ -1051,13 +1046,13 @@ def poll_telegram_callbacks(token, network, worker_cfg):
         ratings[escrow_id] = entry
         save_pending_ratings(ratings)
 
-        # Answer the callback (required by Telegram)
+        # Answer the callback immediately (Telegram requires this within a few seconds)
         stars = "⭐" * rating + "☆" * (5 - rating)
         _tg_post(token, "answerCallbackQuery",
                  callback_query_id=cq_id,
                  text=f"Rating submitted: {stars} ({rating}/5)")
 
-        # Edit the rating message to show the chosen rating
+        # Edit the rating message to replace the buttons with the confirmed rating
         msg_id  = entry.get("rating_msg_id")
         chat_id = cq.get("message", {}).get("chat", {}).get("id")
         if msg_id and chat_id:
@@ -1076,7 +1071,36 @@ def poll_telegram_callbacks(token, network, worker_cfg):
                      text=new_text,
                      parse_mode="Markdown")
 
-    _save_tg_offset(offset)
+    return offset
+
+
+def run_tg_callback_thread(token, network, worker_cfg):
+    """
+    Long-poll Telegram getUpdates in a tight loop. Runs as a daemon thread.
+    timeout=30 means Telegram holds the connection open until an update arrives
+    (or 30s elapse), so click → response latency is ~1 second.
+    """
+    if not token:
+        return
+    log("Telegram callback listener started")
+    retry_delay = 5
+    while True:
+        offset = _load_tg_offset()
+        url = (f"https://api.telegram.org/bot{token}/getUpdates"
+               f"?offset={offset}&timeout=30&allowed_updates=callback_query")
+        try:
+            resp = json.loads(urllib.request.urlopen(
+                urllib.request.Request(url), timeout=35
+            ).read())
+            updates = resp.get("result", [])
+            if updates:
+                new_offset = _handle_tg_updates(updates, token, network, worker_cfg, offset)
+                _save_tg_offset(new_offset)
+            retry_delay = 5
+        except Exception as e:
+            log(f"Telegram long-poll error: {e}")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
 
 
 # ── Hooks fallback (OpenClaw agent trigger) ───────────────────────────────────
@@ -1325,18 +1349,6 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
     except Exception as e:
         fail(f"LLM call failed: {e}")
         return
-
-    # Step 1b: Agent quality self-assessment
-    agent_rating = None
-    try:
-        log(f"[{escrow_id}] Computing agent quality rating...")
-        agent_rating = rate_result_quality(task_description, result, api_key, provider,
-                                           model=model, base_url=base_url)
-        if agent_rating:
-            log(f"[{escrow_id}] Agent rating: {agent_rating}/5")
-            update_pending_task(escrow_id, agent_rating=agent_rating)
-    except Exception as e:
-        log(f"[{escrow_id}] Agent rating skipped: {e}")
 
     # Step 2: Stamp result on-chain
     try:
@@ -1677,7 +1689,6 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
                     log(f"Block {local} pushed")
                     check_pending_releases(network, tg_token, tg_chat_id)
                     check_auto_releases(network, tg_token, tg_chat_id)
-                    poll_telegram_callbacks(tg_token, network, worker_cfg)
                 elif local % 10000 == 0:
                     pct = f"{local/total*100:.1f}%" if total else "?"
                     log(f"Syncing... {local}/{total} ({pct})")
@@ -1827,7 +1838,6 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
     check_pending_releases(network, tg_token, tg_chat_id)
     check_auto_releases(network, tg_token, tg_chat_id)
     process_payer_queue(network, tg_token, tg_chat_id)
-    poll_telegram_callbacks(tg_token, network, worker_cfg)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1876,6 +1886,16 @@ def main():
     else:
         print(f"  Mode:        agent trigger (configure {WORKER_CFG} for autonomous)", flush=True)
     print(flush=True)
+
+    # Start Telegram callback listener as a background thread
+    if tg_token:
+        tg_thread = threading.Thread(
+            target=run_tg_callback_thread,
+            args=(tg_token, args.network, worker_cfg),
+            daemon=True,
+            name="tg-callbacks",
+        )
+        tg_thread.start()
 
     state = load_state()
 
