@@ -64,7 +64,9 @@ RESULT_INBOX_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-result
 RESULT_INBOX_LOCK     = RESULT_INBOX_FILE + ".lock"
 PENDING_RELEASES_FILE    = os.path.expanduser("~/.openclaw/workspace/signaai-pending-releases.json")
 PENDING_AUTO_RELEASE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-auto-release-queue.json")
+PENDING_RATINGS_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-pending-ratings.json")
 DISPUTE_FILE             = os.path.expanduser("~/.openclaw/workspace/signaai-disputes.json")
+TG_OFFSET_FILE           = os.path.expanduser("~/.openclaw/workspace/signaai-tg-trigger-offset.json")
 LISTENER_LOCK_DIR        = os.path.expanduser("~/.openclaw/workspace")
 PAYER_QUEUE_FILE         = os.path.join(
     os.environ.get("SIGNAAI_STATE_DIR", os.path.expanduser("~/.openclaw/workspace")),
@@ -468,6 +470,17 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
 
     status_line = "verified" if hash_ok and proof_ok else "verification failed"
     result_preview = result_text[:3000] + "..." if len(result_text) > 3000 else result_text
+
+    # Look up agent_rating from the pending task record (set during autonomous execution)
+    agent_rating = None
+    try:
+        for task in load_pending():
+            if task.get("escrow_id") == escrow_id:
+                agent_rating = task.get("agent_rating")
+                break
+    except Exception:
+        pass
+
     delivered = send_telegram(tg_token, tg_chat_id, (
         f"✅ *SignaAI Task Complete*\n"
         f"Escrow: `{escrow_id}`\n\n"
@@ -485,7 +498,52 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
         mark_result_notified(escrow_id)
         log(f"[{escrow_id}] Payer notified with delivered result")
         _queue_auto_release(escrow_id, record)
+
+        # Send rating prompt with inline keyboard so Mike can rate the response
+        rating_msg_id = send_rating_keyboard(tg_token, tg_chat_id, escrow_id, agent_rating)
+        store_pending_rating(
+            escrow_id,
+            worker=record.get("worker", ""),
+            result_hash=record.get("result_hash", ""),
+            agent_rating=agent_rating,
+            rating_msg_id=rating_msg_id,
+        )
+
     return delivered
+
+# ── Pending ratings ─────────────────────────────────────────────────────────
+
+def load_pending_ratings():
+    if os.path.exists(PENDING_RATINGS_FILE):
+        try:
+            with open(PENDING_RATINGS_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+def save_pending_ratings(data):
+    tmp = PENDING_RATINGS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, PENDING_RATINGS_FILE)
+
+def store_pending_rating(escrow_id, worker, result_hash, agent_rating=None, rating_msg_id=None):
+    data = load_pending_ratings()
+    if escrow_id not in data:
+        data[escrow_id] = {
+            "escrow_id":      escrow_id,
+            "worker":         worker,
+            "result_hash":    result_hash,
+            "agent_rating":   agent_rating,
+            "rating_msg_id":  rating_msg_id,
+            "status":         "pending",
+            "human_rating":   None,
+            "rated_at":       None,
+            "created_at":     datetime.now().isoformat(),
+        }
+        save_pending_ratings(data)
+
 
 # ── Auto-release queue ───────────────────────────────────────────────────────
 
@@ -828,6 +886,199 @@ def send_telegram(token, chat_id, message, kind="message"):
             return False
 
 
+# ── Telegram inline keyboards ─────────────────────────────────────────────────
+
+def send_telegram_with_keyboard(token, chat_id, text, keyboard, kind="message"):
+    """Send Telegram message with inline keyboard. Returns message_id or None."""
+    if not token or not chat_id:
+        return None
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id":      str(chat_id),
+        "text":         text,
+        "parse_mode":   "Markdown",
+        "reply_markup": json.dumps({"inline_keyboard": keyboard}),
+    }
+    data = urllib.parse.urlencode(payload).encode()
+    try:
+        resp = json.loads(urllib.request.urlopen(
+            urllib.request.Request(url, data=data), timeout=10
+        ).read())
+        msg_id = resp.get("result", {}).get("message_id")
+        log(f"Telegram sent ({kind}) message_id={msg_id} [keyboard]")
+        return msg_id
+    except Exception as e:
+        log(f"Telegram keyboard send failed ({kind}): {e}")
+        return None
+
+
+def send_rating_keyboard(token, chat_id, escrow_id, agent_rating=None):
+    """Send the 'Rate this response' message with ⭐1-⭐5 inline buttons."""
+    keyboard = [[
+        {"text": f"{'⭐' * i}", "callback_data": f"signaai_rate:{escrow_id}:{i}"}
+        for i in range(1, 6)
+    ]]
+    agent_hint = f"\n_Agent assessment: {agent_rating}/5_" if agent_rating else ""
+    text = f"*Rate this response:*{agent_hint}\nEscrow: `{escrow_id}`"
+    return send_telegram_with_keyboard(token, chat_id, text, keyboard,
+                                       kind=f"rating_prompt:{escrow_id}")
+
+
+# ── Telegram callback polling ──────────────────────────────────────────────────
+
+def _load_tg_offset():
+    try:
+        with open(TG_OFFSET_FILE) as f:
+            return json.load(f).get("offset", 0)
+    except Exception:
+        return 0
+
+def _save_tg_offset(offset):
+    tmp = TG_OFFSET_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"offset": offset}, f)
+    os.replace(tmp, TG_OFFSET_FILE)
+
+def _tg_post(token, method, **params):
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    flat = {}
+    for k, v in params.items():
+        flat[k] = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+    data = urllib.parse.urlencode(flat).encode()
+    try:
+        resp = urllib.request.urlopen(
+            urllib.request.Request(url, data=data), timeout=10
+        )
+        return json.loads(resp.read())
+    except Exception as e:
+        log(f"Telegram {method} failed: {e}")
+        return {}
+
+
+def poll_telegram_callbacks(token, network, worker_cfg):
+    """
+    Poll getUpdates for callback_query events from inline keyboard rating buttons.
+    When user clicks ⭐N, send TASK_RATING on-chain and confirm via Telegram.
+    """
+    if not token:
+        return
+
+    offset = _load_tg_offset()
+    url = (f"https://api.telegram.org/bot{token}/getUpdates"
+           f"?offset={offset}&timeout=0&allowed_updates=callback_query")
+    try:
+        resp = json.loads(urllib.request.urlopen(
+            urllib.request.Request(url), timeout=15
+        ).read())
+    except Exception as e:
+        log(f"Telegram getUpdates failed: {e}")
+        return
+
+    updates = resp.get("result", [])
+    if not updates:
+        return
+
+    ratings  = load_pending_ratings()
+    api      = get_api(network)
+    passphrase = (worker_cfg or {}).get("passphrase", "")
+
+    for update in updates:
+        update_id = update.get("update_id", 0)
+        offset = max(offset, update_id + 1)
+
+        cq = update.get("callback_query")
+        if not cq:
+            continue
+
+        cq_id   = cq.get("id", "")
+        cq_data = cq.get("data", "")
+
+        if not cq_data.startswith("signaai_rate:"):
+            _tg_post(token, "answerCallbackQuery", callback_query_id=cq_id)
+            continue
+
+        parts = cq_data.split(":")
+        if len(parts) != 3:
+            _tg_post(token, "answerCallbackQuery", callback_query_id=cq_id,
+                     text="Invalid rating format")
+            continue
+
+        _, escrow_id, rating_str = parts
+        try:
+            rating = int(rating_str)
+            assert 1 <= rating <= 5
+        except (ValueError, AssertionError):
+            _tg_post(token, "answerCallbackQuery", callback_query_id=cq_id,
+                     text="Rating must be 1-5")
+            continue
+
+        entry = ratings.get(escrow_id, {})
+        if not entry:
+            _tg_post(token, "answerCallbackQuery", callback_query_id=cq_id,
+                     text="Escrow not found")
+            continue
+
+        if entry.get("status") == "rated":
+            already = entry.get("human_rating", "?")
+            _tg_post(token, "answerCallbackQuery", callback_query_id=cq_id,
+                     text=f"Already rated {already}/5")
+            continue
+
+        # Send TASK_RATING on-chain
+        worker      = entry.get("worker", "")
+        result_hash = entry.get("result_hash", "")
+        rating_msg  = f"TASK_RATING:v1:{escrow_id}:{worker}:{result_hash}:{rating}"
+        tx_id = None
+        if passphrase and worker:
+            try:
+                sent = api.post("sendMessage",
+                                secretPhrase=passphrase,
+                                recipient=worker,
+                                message=rating_msg,
+                                messageIsText="true",
+                                feeNQT=735000)
+                tx_id = sent.get("transaction")
+                log(f"[{escrow_id}] Human rating {rating}/5 on-chain — TX: {tx_id}")
+            except Exception as e:
+                log(f"[{escrow_id}] Rating TX failed: {e}")
+
+        # Persist rating
+        entry["status"]       = "rated"
+        entry["human_rating"] = rating
+        entry["rated_at"]     = datetime.now().isoformat()
+        if tx_id:
+            entry["rating_tx"] = str(tx_id)
+        ratings[escrow_id] = entry
+        save_pending_ratings(ratings)
+
+        # Answer the callback (required by Telegram)
+        stars = "⭐" * rating + "☆" * (5 - rating)
+        _tg_post(token, "answerCallbackQuery",
+                 callback_query_id=cq_id,
+                 text=f"Rating submitted: {stars} ({rating}/5)")
+
+        # Edit the rating message to show the chosen rating
+        msg_id  = entry.get("rating_msg_id")
+        chat_id = cq.get("message", {}).get("chat", {}).get("id")
+        if msg_id and chat_id:
+            agent_rating = entry.get("agent_rating")
+            agent_text   = f"\n_Agent assessment: {agent_rating}/5_" if agent_rating else ""
+            new_text = (
+                f"✅ *Rating Submitted*\n"
+                f"Escrow: `{escrow_id}`\n"
+                f"Your rating: {stars} ({rating}/5){agent_text}"
+            )
+            if tx_id:
+                new_text += f"\nTX: `{tx_id}`"
+            _tg_post(token, "editMessageText",
+                     chat_id=str(chat_id),
+                     message_id=str(msg_id),
+                     text=new_text,
+                     parse_mode="Markdown")
+
+    _save_tg_offset(offset)
+
+
 # ── Hooks fallback (OpenClaw agent trigger) ───────────────────────────────────
 
 def trigger_agent(hook_token, hook_path, gw_port, escrow_id, sender,
@@ -998,6 +1249,33 @@ def wait_for_confirmation(tx_id, network):
     return False
 
 
+def rate_result_quality(task_description, result_text, api_key, provider="xai", model=None, base_url=None):
+    """
+    Ask the same LLM to score its own output 1-5 against a quality rubric.
+    Returns int 1-5 or None on failure.
+    """
+    prompt = (
+        "Rate the quality of the following AI research response on a scale of 1 to 5.\n\n"
+        f"Task: {task_description[:500]}\n\n"
+        f"Response: {result_text[:2000]}\n\n"
+        "Rating criteria:\n"
+        "5 = Excellent: accurate, complete, specific data, directly answers the task\n"
+        "4 = Good: mostly accurate, addresses the main question with reasonable detail\n"
+        "3 = Fair: partially answers, some relevant information but gaps exist\n"
+        "2 = Poor: vague, hedged, lacks specifics, or mostly misses the point\n"
+        "1 = Fail: wrong, irrelevant, or refuses to engage\n\n"
+        "Return ONLY a single integer 1-5. Nothing else."
+    )
+    try:
+        response = call_llm(prompt, api_key, provider, model=model, base_url=base_url)
+        rating = int(response.strip()[0])
+        if 1 <= rating <= 5:
+            return rating
+    except Exception as e:
+        log(f"Agent rating LLM call failed: {e}")
+    return None
+
+
 def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender, worker_address,
                                network, worker_cfg, tg_token, tg_chat_id):
     """
@@ -1047,6 +1325,18 @@ def execute_task_autonomously(escrow_id, assign_tx_id, task_description, sender,
     except Exception as e:
         fail(f"LLM call failed: {e}")
         return
+
+    # Step 1b: Agent quality self-assessment
+    agent_rating = None
+    try:
+        log(f"[{escrow_id}] Computing agent quality rating...")
+        agent_rating = rate_result_quality(task_description, result, api_key, provider,
+                                           model=model, base_url=base_url)
+        if agent_rating:
+            log(f"[{escrow_id}] Agent rating: {agent_rating}/5")
+            update_pending_task(escrow_id, agent_rating=agent_rating)
+    except Exception as e:
+        log(f"[{escrow_id}] Agent rating skipped: {e}")
 
     # Step 2: Stamp result on-chain
     try:
@@ -1387,6 +1677,7 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
                     log(f"Block {local} pushed")
                     check_pending_releases(network, tg_token, tg_chat_id)
                     check_auto_releases(network, tg_token, tg_chat_id)
+                    poll_telegram_callbacks(tg_token, network, worker_cfg)
                 elif local % 10000 == 0:
                     pct = f"{local/total*100:.1f}%" if total else "?"
                     log(f"Syncing... {local}/{total} ({pct})")
@@ -1536,6 +1827,7 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
     check_pending_releases(network, tg_token, tg_chat_id)
     check_auto_releases(network, tg_token, tg_chat_id)
     process_payer_queue(network, tg_token, tg_chat_id)
+    poll_telegram_callbacks(tg_token, network, worker_cfg)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
