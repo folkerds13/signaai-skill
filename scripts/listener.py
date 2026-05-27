@@ -1161,13 +1161,15 @@ LLM_PROVIDERS = {
     "ollama":    ("http://localhost:11434/v1",             "llama3.1:8b"),               # no key needed
 }
 
+LLM_TIMEOUT = 300  # seconds — generous for slow connections and large models
+LLM_RETRIES = 2
+
 def call_llm(task_description, api_key, provider="xai", model=None, base_url=None):
     """
     Call LLM to research a task. Returns result text.
+    Retries up to LLM_RETRIES times on timeout or transient error.
 
     provider/model/base_url are read from openclaw.json via load_openclaw_llm().
-    Falls back to LLM_PROVIDERS defaults if base_url not supplied.
-
     Supported providers: xai, openai, groq, anthropic, ollama
     All except anthropic use the OpenAI-compatible /chat/completions endpoint.
     """
@@ -1177,40 +1179,51 @@ def call_llm(task_description, api_key, provider="xai", model=None, base_url=Non
         f"Task: {task_description}"
     )
 
-    if provider == "anthropic":
-        url = "https://api.anthropic.com/v1/messages"
-        data = json.dumps({
-            "model": model or "claude-haiku-4-5-20251001",
-            "max_tokens": 1500,
-            "messages": [{"role": "user", "content": prompt}]
-        }).encode()
-        req = urllib.request.Request(url, data=data, headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        })
-        resp = json.loads(urllib.request.urlopen(req, timeout=120).read())
-        return resp["content"][0]["text"]
+    last_err = None
+    for attempt in range(1, LLM_RETRIES + 1):
+        try:
+            if attempt > 1:
+                log(f"LLM retry {attempt}/{LLM_RETRIES} after: {last_err}")
+                time.sleep(5)
 
-    # All other providers: OpenAI-compatible
-    # Use base_url from openclaw.json if available, otherwise fall back to defaults
-    if not base_url:
-        base_url, _ = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
-    if not model:
-        _, model = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
+            if provider == "anthropic":
+                url = "https://api.anthropic.com/v1/messages"
+                data = json.dumps({
+                    "model": model or "claude-haiku-4-5-20251001",
+                    "max_tokens": 1500,
+                    "messages": [{"role": "user", "content": prompt}]
+                }).encode()
+                req = urllib.request.Request(url, data=data, headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                })
+                resp = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT).read())
+                return resp["content"][0]["text"]
 
-    url = f"{base_url}/chat/completions"
-    headers = {"content-type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    data = json.dumps({
-        "model": model,
-        "max_tokens": 1500,
-        "messages": [{"role": "user", "content": prompt}]
-    }).encode()
-    req = urllib.request.Request(url, data=data, headers=headers)
-    resp = json.loads(urllib.request.urlopen(req, timeout=120).read())
-    return resp["choices"][0]["message"]["content"]
+            # All other providers: OpenAI-compatible
+            if not base_url:
+                base_url, _ = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
+            if not model:
+                _, model = LLM_PROVIDERS.get(provider, LLM_PROVIDERS["xai"])
+
+            url = f"{base_url}/chat/completions"
+            headers = {"content-type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            data = json.dumps({
+                "model": model,
+                "max_tokens": 1500,
+                "messages": [{"role": "user", "content": prompt}]
+            }).encode()
+            req = urllib.request.Request(url, data=data, headers=headers)
+            resp = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT).read())
+            return resp["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            last_err = e
+
+    raise Exception(f"LLM failed after {LLM_RETRIES} attempts: {last_err}")
 
 
 def get_transaction_any_node(tx_id, network):
