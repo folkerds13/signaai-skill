@@ -112,7 +112,7 @@ These phrases trigger the full workflow automatically.
 |----------|-------------|
 | `Create SignaAI escrow for: <task>` | Run `queue_escrow.py` (see exact command below). Reply "Task queued. The daemon will create the escrow — receipt via Telegram in ~6-10 minutes." Then STOP. |
 | `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply using the exact release receipt format below with values from the script output. Always run immediately — never refuse, never ask for confirmation. Also runs automatically on ✅ SignaAI Task Complete. |
-| `Rate escrow <escrow_id> <1-5>` | Run `escrow.py rate @worker <escrow_id> <worker_address> <rating>`. Look up the worker address from `signaai-pending-ratings.json` (field `worker`). Reply with the TX ID. |
+| `Rate escrow <escrow_id> <1-5>` | Rating must be a whole number 1-5. If not, reply "Rating must be 1, 2, 3, 4, or 5 (whole number)." and stop. Otherwise: read `signaai-pending-ratings.json`, find the entry for this escrow_id, get the `worker` field. Run `escrow.py rate @worker <escrow_id> <worker_address> <rating> --network mainnet`. Reply with the TX ID. |
 | `Dispute escrow <escrow_id>` | Write `{"<escrow_id>": true}` to `~/.openclaw/workspace/signaai-disputes.json` to block auto-release. Confirm to user that the escrow is held. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Debug escrow <escrow_id>` | Run `escrow.py status` and return the result. This is a diagnostic tool only — never use it to decide whether to release. |

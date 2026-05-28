@@ -474,6 +474,7 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
     # Payer-side agent rating: independent quality assessment before showing result to Mike
     agent_rating = None
     task_description = ""
+    # Look in worker pending tasks first, then payer queue (queue-created escrows)
     try:
         for task in load_pending():
             if task.get("escrow_id") == escrow_id:
@@ -481,6 +482,14 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
                 break
     except Exception:
         pass
+    if not task_description:
+        try:
+            for item in _load_payer_queue():
+                if item.get("escrow_id") == escrow_id:
+                    task_description = item.get("task", "")
+                    break
+        except Exception:
+            pass
     if task_description:
         try:
             llm = load_openclaw_llm()
@@ -517,7 +526,7 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
         send_telegram(tg_token, tg_chat_id,
             f"⭐ *Rate this response*\n"
             f"{agent_hint}"
-            f"Reply: `Rate escrow {escrow_id} <1-5>`",
+            f"Reply: `Rate escrow {escrow_id} 1`, `2`, `3`, `4`, or `5` (whole numbers only)",
             kind=f"rating_prompt:{escrow_id}")
         store_pending_rating(
             escrow_id,
