@@ -445,6 +445,46 @@ python3 ~/.openclaw/workspace/skills/signaai/scripts/listener.py --once
 
 ---
 
+## 8 — Open Escrow (Task Discovery Flow)
+
+When the user wants to post a task without a specific worker, use `escrow.py open`. The board is invisible — it's an implementation detail. Workers see the task on-chain and claim it. The payer gets a Telegram notification and accepts the worker, which automatically queues the AT escrow.
+
+**Flow:** OPEN → (worker claims) → ACCEPT+ESCROW → normal submit/release flow
+
+### Trigger: "Open SignaAI escrow for: \<task\>"
+
+When message contains `Open SignaAI escrow for: <task>`:
+1. Parse the task description and amount (default 1 SIGNA if not stated)
+2. Run:
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py open @worker "<task_description>" <amount> --capability research --network mainnet
+```
+3. Output includes `Task ID` and `TX` — show both to the user
+4. Tell the user: "Task posted. You'll get a Telegram notification when a worker claims it."
+5. STOP — do not create an escrow yet, do not ask questions.
+
+### Trigger: "Accept claim \<task_id\> \<worker_address\>"
+
+When message contains `Accept claim <task_id> <worker_address>`:
+1. Run:
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py accept @worker <task_id> <worker_address> --network mainnet
+```
+2. Show the output — the AT escrow will be created automatically by the listener in the next poll cycle (~2 min).
+3. STOP.
+
+### List open tasks on the board
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/board.py tasks --board S-PS4K-2KE2-8LEV-HD2YE --network mainnet
+```
+
+### Cancel an open task
+```bash
+python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py cancel @worker <task_id> --network mainnet
+```
+
+---
+
 ## Key Numbers
 
 | Item | Value |

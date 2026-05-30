@@ -40,6 +40,27 @@ from protocol import (
     parse_task, TaskMessage, TASK_PREFIX, ProtocolError,
 )
 
+# ── Passphrase resolution ─────────────────────────────────────────────────────
+
+def _resolve_passphrase(passphrase):
+    """Resolve '@worker' sentinel to the actual passphrase from signaai-worker.json."""
+    if passphrase and str(passphrase).strip().startswith("@"):
+        key = passphrase.strip()[1:]
+        for path in [
+            os.path.expanduser("~/.openclaw/signaai-worker.json"),
+            os.path.expanduser("~/.openclaw/workspace/signaai-worker.json"),
+        ]:
+            if os.path.exists(path):
+                import json
+                with open(path) as f:
+                    cfg = json.load(f)
+                val = cfg.get(key) or cfg.get("passphrase")
+                if val:
+                    return val
+        raise SystemExit(f"Error: '@{key}' not found in signaai-worker.json")
+    return passphrase
+
+
 # ── Board address resolution ──────────────────────────────────────────────────
 
 SIGNAAI_BOARD = os.environ.get("SIGNAAI_BOARD", "")
@@ -321,6 +342,9 @@ def main():
     os.environ["SIGNUM_NETWORK"] = args.network
 
     board = args.board if hasattr(args, "board") else None
+
+    if hasattr(args, "passphrase"):
+        args.passphrase = _resolve_passphrase(args.passphrase)
 
     try:
         if args.cmd == "open":

@@ -67,6 +67,7 @@ PENDING_AUTO_RELEASE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-au
 PENDING_RATINGS_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-pending-ratings.json")
 DISPUTE_FILE             = os.path.expanduser("~/.openclaw/workspace/signaai-disputes.json")
 TG_OFFSET_FILE           = os.path.expanduser("~/.openclaw/workspace/signaai-tg-trigger-offset.json")
+BOARD_CLAIMS_NOTIFIED_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-board-claims-notified.json")
 LISTENER_LOCK_DIR        = os.path.expanduser("~/.openclaw/workspace")
 PAYER_QUEUE_FILE         = os.path.join(
     os.environ.get("SIGNAAI_STATE_DIR", os.path.expanduser("~/.openclaw/workspace")),
@@ -1840,6 +1841,91 @@ def process_payer_queue(network, tg_token, tg_chat_id):
         _save_payer_queue(items)
 
 
+def _load_notified_claims():
+    if os.path.exists(BOARD_CLAIMS_NOTIFIED_FILE):
+        try:
+            with open(BOARD_CLAIMS_NOTIFIED_FILE) as f:
+                return set(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            return set()
+    return set()
+
+
+def _save_notified_claims(notified):
+    tmp = BOARD_CLAIMS_NOTIFIED_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(list(notified), f)
+    os.replace(tmp, BOARD_CLAIMS_NOTIFIED_FILE)
+
+
+def check_board_claims(network, tg_token, tg_chat_id):
+    """Scan board addresses for TASK:CLAIM events on our open tasks and notify payer."""
+    items = _load_payer_queue()
+    open_tasks = {
+        item["task_id"]: item
+        for item in items
+        if item.get("status") == "open" and item.get("task_id") and item.get("board_address")
+    }
+    if not open_tasks:
+        return
+
+    notified = _load_notified_claims()
+    changed = False
+
+    api = get_api(network)
+    # Group by board_address to avoid redundant API calls
+    boards = {}
+    for task_id, item in open_tasks.items():
+        board = item["board_address"]
+        boards.setdefault(board, []).append(task_id)
+
+    for board_address, task_ids in boards.items():
+        result = api.get("getAccountTransactions",
+                         account=board_address,
+                         firstIndex=0,
+                         lastIndex=49,
+                         type=1)
+        if not ok(result):
+            continue
+
+        for tx in (result.get("transactions") or []):
+            tx_id = str(tx.get("transaction", ""))
+            if tx_id in notified:
+                continue
+
+            msg = tx.get("attachment", {}).get("message", "")
+            if not msg.startswith("TASK:CLAIM"):
+                continue
+
+            try:
+                from protocol import parse_task
+                parsed = parse_task(msg)
+            except Exception:
+                continue
+
+            if parsed.action != "CLAIM" or parsed.task_id not in task_ids:
+                continue
+
+            worker = parsed.worker_address
+            task_item = open_tasks[parsed.task_id]
+            notified.add(tx_id)
+            changed = True
+
+            log(f"[board] Worker {worker} claimed task {parsed.task_id}")
+
+            summary = task_item.get("task", "")[:80]
+            send_telegram(tg_token, tg_chat_id,
+                f"\U0001f64b *Worker claimed your task*\n"
+                f"Task ID: `{parsed.task_id}`\n"
+                f"Worker: `{worker}`\n"
+                f"Task: {summary}\n\n"
+                f"Reply: `Accept claim {parsed.task_id} {worker}`",
+                kind=f"board_claim:{parsed.task_id}")
+
+    if changed:
+        _save_notified_claims(notified)
+
+
 def poll_once(address, network, state, tg_token, tg_chat_id,
               hook_token=None, hook_path="/hooks", gw_port=18789,
               worker_cfg=None):
@@ -1863,6 +1949,7 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
         log("No new tasks")
     check_pending_releases(network, tg_token, tg_chat_id)
     check_auto_releases(network, tg_token, tg_chat_id)
+    check_board_claims(network, tg_token, tg_chat_id)
     process_payer_queue(network, tg_token, tg_chat_id)
 
 
