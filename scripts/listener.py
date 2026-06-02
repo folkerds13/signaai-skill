@@ -271,12 +271,20 @@ def startup_payer_catchup(address, network, state, tg_token, tg_chat_id, worker_
         log(f"[{escrow_id}] Startup: unnotified result in inbox — re-notifying payer")
         maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network)
 
-    # Step 2: scan blockchain for missed chunks/submits since last saved timestamp
+    # Step 2: scan blockchain for missed chunks/submits.
+    # If there are unnotified results, scan from timestamp=0 to catch chunks that
+    # arrived just before the last saved timestamp (common when machine was asleep
+    # during result delivery — chunks arrive seconds before the SUBMIT TX).
     log("Startup: scanning blockchain for missed payer events...")
     api = get_api(network)
+    has_unnotified = any(
+        not r.get("notified")
+        for r in load_result_inbox().get("escrows", {}).values()
+    )
+    scan_timestamp = 0 if has_unnotified else state.get("last_seen_timestamp", 0)
     result = api.get("getAccountTransactions",
                      account=address,
-                     timestamp=state.get("last_seen_timestamp", 0),
+                     timestamp=scan_timestamp,
                      firstIndex="0",
                      lastIndex="99")
     if ok(result):
