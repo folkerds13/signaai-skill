@@ -249,6 +249,54 @@ def chain_has_worker_submission(escrow_id, address, network):
             return tx.get("transaction")
     return None
 
+def startup_payer_catchup(address, network, state, tg_token, tg_chat_id, worker_cfg):
+    """
+    On startup, catch up on payer-side events missed while the listener was offline.
+
+    When the listener reconnects via WebSocket it only sees NEW transactions — anything
+    that arrived while the machine was asleep is never replayed. This function:
+      1. Checks result inbox for complete-but-unnotified results → notify + queue release
+      2. Polls the blockchain for missed incoming TXs (chunks, submits) and processes them
+      3. Runs any overdue auto-releases immediately
+    """
+    # Step 1: inbox may already have data if some chunks arrived before sleep
+    inbox = load_result_inbox()
+    for escrow_id, record in inbox.get("escrows", {}).items():
+        if record.get("notified"):
+            continue
+        if not record.get("submit_tx"):
+            continue
+        if assemble_result(record) is None:
+            continue
+        log(f"[{escrow_id}] Startup: unnotified result in inbox — re-notifying payer")
+        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network)
+
+    # Step 2: scan blockchain for missed chunks/submits since last saved timestamp
+    log("Startup: scanning blockchain for missed payer events...")
+    api = get_api(network)
+    result = api.get("getAccountTransactions",
+                     account=address,
+                     timestamp=state.get("last_seen_timestamp", 0),
+                     firstIndex="0",
+                     lastIndex="99")
+    if ok(result):
+        found = sum(
+            handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
+                               worker_cfg=worker_cfg)
+            for tx in (result.get("transactions") or [])
+        )
+        save_state(state)
+        if found:
+            log(f"Startup: processed {found} missed transaction(s)")
+        else:
+            log("Startup: no missed payer transactions found")
+    else:
+        log(f"Startup: payer scan failed — {result.get('error', 'unknown error')}")
+
+    # Step 3: run any overdue auto-releases (review window may have passed while asleep)
+    check_auto_releases(network, tg_token, tg_chat_id)
+
+
 def startup_retry_candidates(address, network):
     """
     Return stale pending/in_progress tasks that still need work.
@@ -1931,6 +1979,9 @@ def main():
                     escrow_id, task.get("tx_id", ""), task_desc, sender, args.address,
                     args.network, worker_cfg, tg_token, tg_chat_id
                 )))
+
+    # Payer-side catch-up: re-notify results and run releases missed while offline
+    startup_payer_catchup(args.address, args.network, state, tg_token, tg_chat_id, worker_cfg)
 
     if args.once:
         poll_once(args.address, args.network, state, tg_token, tg_chat_id,

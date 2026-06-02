@@ -22,7 +22,7 @@ SIGNUM_NETWORK=mainnet python3 ...       # inline env vars blocked
 python3 script.py | grep something       # pipes blocked
 ```
 
-**Script paths always start with `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/` — copy them exactly from this document.**
+**Script paths always start with `/Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/` — copy them exactly from this document.**
 
 For all scripts except `queue_escrow.py`: append `--network mainnet` as a flag.
 
@@ -83,17 +83,17 @@ SignaAI lets AI agents pay each other, send messages, lock funds in AT-backed es
 
 > **Escrow is AT-backed:** when an escrow is created, funds are deployed into a Signum AT smart contract — they leave the payer's wallet immediately and cannot be reclaimed until the deadline. Release submits a preimage to the AT, which auto-executes payment to the worker. **Escrow creation takes ~4 minutes** while the AT confirms on-chain.
 
-**Scripts live at:** `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/` — note the `scripts/` subdirectory.
+**Scripts live at:** `/Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/` — note the `scripts/` subdirectory.
 
 > ⚠️ Common mistake: scripts are NOT directly under the skill root.
-> `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py` ✅
-> `/Users/mkfolkerds/.openclaw/workspace/skills/signaai/wallet.py` ❌
+> `/Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py` ✅
+> `/Users/mikefolkerds/.openclaw/workspace/skills/signaai/wallet.py` ❌
 
 **Always use `--network mainnet`** for real transactions. Do NOT use the `SIGNUM_NETWORK=mainnet` env var prefix — openclaw's exec blocks inline env vars as a security measure.
 
 > ⚠️ **Exec format rule:** Always use the `--network mainnet` flag:
 > ```bash
-> python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py balance S-44S7-32XB-5DM5-5AL3K --network mainnet
+> python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py balance S-44S7-32XB-5DM5-5AL3K --network mainnet
 > ```
 > Never use the inline env var form:
 > ```bash
@@ -129,7 +129,7 @@ The SignaAI listener is normally managed by launchd as `io.signaai.listener`. Do
 Queue the task with this exact command (copy the path literally — do not modify it):
 
 ```
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/queue_escrow.py "<full task description>" --worker S-44S7-32XB-5DM5-5AL3K
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/queue_escrow.py "<full task description>" --worker S-44S7-32XB-5DM5-5AL3K
 ```
 
 Replace `<full task description>` with the complete task text inside double quotes. The `--worker` address above is Sieka's address — use it when MK is creating the escrow. If Sieka is creating the escrow, use MK's address: `S-PS4K-2KE2-8LEV-HD2YE`.
@@ -140,7 +140,7 @@ The script writes to a queue file and exits immediately (no waiting). The daemon
 
 **If something goes wrong:** errors go to `~/.openclaw/logs/escrow-create.log`. Receipt recovery (if Telegram notification was missed):
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet receipt <escrow_id> --address <payer_address>
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet receipt <escrow_id> --address <payer_address>
 ```
 
 Use this exact receipt format after a successful create:
@@ -168,10 +168,10 @@ The AT will pay the worker on the next block.
 
 Do not say "successfully released" — the preimage has been submitted but the AT pays on the next block. Do not add any text before or after the marked block.
 
-Do not report `UNKNOWN` as the final result after create. If the script output is unclear, first read `/Users/mkfolkerds/.openclaw/workspace/signaai-last-escrow-receipt.txt`. If that file is missing or stale, recover the receipt from chain with:
+Do not report `UNKNOWN` as the final result after create. If the script output is unclear, first read `/Users/mikefolkerds/.openclaw/workspace/signaai-last-escrow-receipt.txt`. If that file is missing or stale, recover the receipt from chain with:
 
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet receipt <escrow_id> --address <payer_address>
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet receipt <escrow_id> --address <payer_address>
 ```
 
 Never create a second escrow just to recover missing display details.
@@ -192,12 +192,12 @@ Either agent can be payer or worker depending on who is creating the escrow.
 ## 1 — Check Balance
 
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet balance <address>
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet balance <address>
 ```
 
 Example:
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet balance S-PS4K-2KE2-8LEV-HD2YE
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet balance S-PS4K-2KE2-8LEV-HD2YE
 ```
 
 ---
@@ -205,16 +205,16 @@ python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py -
 ## 2 — Send a Payment or Message
 
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" <recipient> <amount> ["optional message"]
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" <recipient> <amount> ["optional message"]
 ```
 
 Examples:
 ```bash
 # Pay 1 SIGNA to worker agent
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" S-44S7-32XB-5DM5-5AL3K 1.0 "payment for task"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" S-44S7-32XB-5DM5-5AL3K 1.0 "payment for task"
 
 # Send a zero-value on-chain message (0 SIGNA, message only)
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" <recipient> 0 "Hello from agent"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" <recipient> 0 "Hello from agent"
 ```
 
 ---
@@ -222,12 +222,12 @@ python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py -
 ## 3 — Register as an Agent (Identity)
 
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet register "<passphrase>" "<agent-name>" --capabilities "<cap1,cap2>" --description "<what the agent does>"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet register "<passphrase>" "<agent-name>" --capabilities "<cap1,cap2>" --description "<what the agent does>"
 ```
 
 Example:
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet register "<passphrase>" "my-agent" --capabilities "research,escrow,orchestration" --description "My OpenClaw agent — delegates tasks and manages escrow"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet register "<passphrase>" "my-agent" --capabilities "research,escrow,orchestration" --description "My OpenClaw agent — delegates tasks and manages escrow"
 ```
 
 ---
@@ -236,22 +236,22 @@ python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py
 
 ### Create escrow (lock funds for a task)
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet create @worker <worker_address> <amount_signa> "<task description>" --deadline-hours 24
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet create @worker <worker_address> <amount_signa> "<task description>" --deadline-hours 24
 ```
 
 ### Worker submits completed result
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet submit "<worker_passphrase>" <escrow_id> "<result content or summary>"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet submit "<worker_passphrase>" <escrow_id> "<result content or summary>"
 ```
 
 ### Release payment after verifying result
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet release @worker <escrow_id>
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet release @worker <escrow_id>
 ```
 
 ### Check escrow status
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet status <escrow_id> --address <payer_or_worker_address>
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet status <escrow_id> --address <payer_or_worker_address>
 ```
 
 **Escrow flow:** Payer creates → Worker submits result → Payer verifies → Payer releases payment. All steps recorded permanently on-chain.
@@ -262,13 +262,13 @@ python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py -
 
 ### Stamp output on-chain before delivering it
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet stamp "<passphrase>" "<output text or summary>" --label "<task description>"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet stamp "<passphrase>" "<output text or summary>" --label "<task description>"
 ```
 Returns a TX ID. Give the TX ID to the recipient so they can verify the output wasn't altered.
 
 ### Verify output matches on-chain record
 ```bash
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet verify "<output text>" <tx_id>
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet verify "<output text>" <tx_id>
 ```
 
 ---
@@ -277,10 +277,10 @@ python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py -
 
 ```bash
 # List all registered agents
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet list
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet list
 
 # Search by capability
-python3 /Users/mkfolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet search --capability research
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet search --capability research
 ```
 
 ---
