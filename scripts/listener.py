@@ -269,7 +269,7 @@ def startup_payer_catchup(address, network, state, tg_token, tg_chat_id, worker_
         if assemble_result(record) is None:
             continue
         log(f"[{escrow_id}] Startup: unnotified result in inbox — re-notifying payer")
-        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network)
+        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network, worker_cfg)
 
     # Step 2: scan blockchain for missed chunks/submits.
     # If there are unnotified results, scan from timestamp=0 to catch chunks that
@@ -504,7 +504,35 @@ def assemble_result(record):
         data += base64.urlsafe_b64decode((payload + padding).encode("ascii"))
     return data.decode("utf-8")
 
-def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
+def notify_webhook(cfg, payload):
+    """POST a signed JSON event to any agent framework endpoint.
+
+    cfg keys: url (required), hmac_secret, hmac_header (default X-Webhook-Signature),
+    auth_prefix (prepended to the signature value, e.g. 'Bearer ').
+    """
+    import hmac as _hmac
+    url = cfg.get("url", "")
+    if not url:
+        return False
+    body = json.dumps(payload).encode()
+    secret = cfg.get("hmac_secret", "")
+    header = cfg.get("hmac_header", "X-Webhook-Signature")
+    prefix = cfg.get("auth_prefix", "")
+    sig = _hmac.new(secret.encode(), body, hashlib.sha256).hexdigest() if secret else ""
+    req = urllib.request.Request(url, data=body, headers={
+        "Content-Type": "application/json",
+        header: f"{prefix}{sig}",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            log(f"Webhook notified: {url} → {resp.status}")
+        return True
+    except Exception as e:
+        log(f"Webhook notify failed ({url}): {e}")
+        return False
+
+
+def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network, worker_cfg=None):
     record = load_result_inbox().get("escrows", {}).get(escrow_id, {})
     if record.get("notified") or not record.get("submit_tx"):
         return False
@@ -559,31 +587,46 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network):
         except Exception as e:
             log(f"[{escrow_id}] Agent rating skipped: {e}")
 
-    delivered = send_telegram(tg_token, tg_chat_id, (
-        f"✅ *SignaAI Task Complete*\n"
-        f"Escrow: `{escrow_id}`\n\n"
-        f"*Research Result:*\n{result_preview}\n\n"
-        f"Stamp TX: `{record.get('proof_tx')}`\n"
-        f"Submit TX: `{record.get('submit_tx')}`\n"
-        f"Result hash: `{status_line}`\n\n"
-        f"Payment review window: {REVIEW_MINUTES} minutes.\n"
-        f"Auto-release scheduled unless disputed.\n\n"
-        f"To block payment, reply:\n"
-        f"Dispute escrow {escrow_id}"
-    ), kind=f"payer_task_complete:{escrow_id}")
+    agent_hint = f"Agent assessment: {agent_rating}/5\n" if agent_rating else ""
+    payer_notif = (worker_cfg or {}).get("payer_notification", {})
+
+    if payer_notif.get("url"):
+        # Generic webhook path — works with any agent framework (Hermes, OpenClaw, etc.)
+        delivered = notify_webhook(payer_notif, {
+            "escrow_id": escrow_id,
+            "submit_tx": record.get("submit_tx"),
+            "proof_tx": record.get("proof_tx"),
+            "result_preview": result_preview,
+            "result_hash_status": status_line,
+            "agent_rating": agent_rating,
+            "review_minutes": REVIEW_MINUTES,
+        })
+    else:
+        # Fallback: Telegram (existing behavior for OpenClaw / unconfigured setups)
+        delivered = send_telegram(tg_token, tg_chat_id, (
+            f"✅ *SignaAI Task Complete*\n"
+            f"Escrow: `{escrow_id}`\n\n"
+            f"*Research Result:*\n{result_preview}\n\n"
+            f"Stamp TX: `{record.get('proof_tx')}`\n"
+            f"Submit TX: `{record.get('submit_tx')}`\n"
+            f"Result hash: `{status_line}`\n\n"
+            f"Payment review window: {REVIEW_MINUTES} minutes.\n"
+            f"Auto-release scheduled unless disputed.\n\n"
+            f"To block payment, reply:\n"
+            f"Dispute escrow {escrow_id}"
+        ), kind=f"payer_task_complete:{escrow_id}")
+
+        if delivered:
+            send_telegram(tg_token, tg_chat_id,
+                f"⭐ *Rate this response*\n"
+                f"{agent_hint}"
+                f"Reply: `Rate escrow {escrow_id} 1`, `2`, `3`, `4`, or `5` (whole numbers only)",
+                kind=f"rating_prompt:{escrow_id}")
 
     if delivered:
         mark_result_notified(escrow_id)
         log(f"[{escrow_id}] Payer notified with delivered result")
         _queue_auto_release(escrow_id, record)
-
-        # Send plain-text rating prompt
-        agent_hint = f"Agent assessment: {agent_rating}/5\n" if agent_rating else ""
-        send_telegram(tg_token, tg_chat_id,
-            f"⭐ *Rate this response*\n"
-            f"{agent_hint}"
-            f"Reply: `Rate escrow {escrow_id} 1`, `2`, `3`, `4`, or `5` (whole numbers only)",
-            kind=f"rating_prompt:{escrow_id}")
         store_pending_rating(
             escrow_id,
             worker=record.get("worker", ""),
@@ -1564,7 +1607,7 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
             return False
         update_result_chunk(escrow_id, index, total, chunk, tx_id, sender)
         log(f"Result chunk {index}/{total} received for escrow {escrow_id} (TX {tx_id})")
-        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network)
+        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network, worker_cfg)
         return True
 
     try:
@@ -1580,7 +1623,7 @@ def handle_transaction(tx, address, network, state, tg_token, tg_chat_id,
                              parsed.proof_tx, sender)
         log(f"Escrow submission received — escrow {escrow_id} from {sender} "
             f"(proof {parsed.proof_tx}, TX {tx_id})")
-        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network)
+        maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network, worker_cfg)
         return True
 
     if parsed.action == "CREATE" and parsed.worker == address and parsed.task_description:
