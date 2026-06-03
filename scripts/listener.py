@@ -93,7 +93,7 @@ def _task_worker():
 _worker_thread = threading.Thread(target=_task_worker, daemon=True)
 _worker_thread.start()
 OPENCLAW_CFG  = os.path.expanduser("~/.openclaw/openclaw.json")
-WORKER_CFG    = os.path.expanduser("~/.openclaw/signaai-worker.json")
+WORKER_CFG    = os.path.expanduser("~/.openclaw/signaai-worker.json")  # overridden by --config
 
 WS_HOST = "localhost"
 WS_PORT = 8126
@@ -127,16 +127,18 @@ def git_commit():
     except Exception:
         return "unknown"
 
-def acquire_listener_lock(network):
+def acquire_listener_lock(network, address=None):
     """
-    Hold an exclusive per-network lock for the listener process lifetime.
+    Hold an exclusive per-address lock for the listener process lifetime.
 
+    Lock is keyed by address so multiple agents on the same machine can coexist.
     This prevents a launchd daemon and a manual foreground listener from both
     processing the same escrow stream and writing contradictory log lines.
     """
     global _listener_lock_handle
     os.makedirs(LISTENER_LOCK_DIR, exist_ok=True)
-    lock_path = os.path.join(LISTENER_LOCK_DIR, f"signaai-listener-{network}.lock")
+    addr_suffix = f"-{address}" if address else ""
+    lock_path = os.path.join(LISTENER_LOCK_DIR, f"signaai-listener-{network}{addr_suffix}.lock")
     lock = open(lock_path, "a+")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1969,19 +1971,24 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
 
 def main():
     parser = argparse.ArgumentParser(description="SignaAI Autonomous Worker Daemon")
-    parser.add_argument("--address",       default=None,   help="Wallet address to monitor (derived from signaai-worker.json if omitted)")
+    parser.add_argument("--address",       default=None,   help="Wallet address to monitor (derived from config if omitted)")
     parser.add_argument("--network",       default="mainnet", choices=["mainnet", "testnet"])
+    parser.add_argument("--config",        default=None,   help="Path to signaai-worker.json (default: ~/.openclaw/signaai-worker.json)")
     parser.add_argument("--poll-interval", type=int, default=POLL_INTERVAL)
     parser.add_argument("--once",          action="store_true", help="Poll once and exit")
     parser.add_argument("--no-websocket",  action="store_true", help="Force polling mode")
     args = parser.parse_args()
 
-    lock_path = acquire_listener_lock(args.network)
+    # Override WORKER_CFG before load_worker_config() is called
+    global WORKER_CFG
+    if args.config:
+        WORKER_CFG = os.path.abspath(args.config)
 
     tg_token, tg_chat_id, hook_token, hook_path, gw_port = load_openclaw_config()
     worker_cfg = load_worker_config()
 
-    # Derive address from worker config if not supplied on the command line
+    # Derive address before acquiring lock — lock is per-address so multiple
+    # agents on the same machine can run concurrently with different configs.
     if not args.address:
         if not worker_cfg:
             parser.error("--address is required when no signaai-worker.json is present")
@@ -1990,6 +1997,8 @@ def main():
         if err:
             parser.error(f"Could not derive address from worker config: {err}")
         args.address = addr
+
+    lock_path = acquire_listener_lock(args.network, args.address)
 
     print(f"SignaAI Listener starting", flush=True)
     print(f"  PID:         {os.getpid()}", flush=True)
