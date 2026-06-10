@@ -2172,10 +2172,16 @@ def main():
     # Payer-side catch-up: re-notify results and run releases missed while offline
     startup_payer_catchup(args.address, args.network, state, tg_token, tg_chat_id, worker_cfg)
 
-    # Start Telegram callback thread for the payer bot (Hermes) if configured separately
+    # Start Telegram callback thread for the payer bot (Hermes) if configured separately.
+    # poll_callbacks: false — set this when a chat gateway (Hermes/OpenClaw) already
+    # long-polls the same bot. Telegram allows ONE getUpdates consumer per token;
+    # a second one loses every race and spams 409 Conflict. Outbound notifications
+    # (sendMessage) are unaffected and keep working either way.
     payer_notif   = (worker_cfg or {}).get("payer_notification", {})
     payer_tg_token = payer_notif.get("telegram_token")
-    if payer_tg_token and payer_tg_token != tg_token:
+    if payer_tg_token and not payer_notif.get("poll_callbacks", True):
+        log("Payer bot: outbound notifications only (poll_callbacks=false — bot owned by a chat gateway)")
+    elif payer_tg_token and payer_tg_token != tg_token:
         thr = threading.Thread(
             target=run_tg_callback_thread,
             args=(payer_tg_token, args.network, worker_cfg),
