@@ -61,6 +61,7 @@ DEDUP_FILE            = os.path.join(_STATE_DIR, "signaai-escrow-dedup.json")
 DEDUP_TTL             = 3600  # seconds — ignore duplicate requests within 1 hour
 RELEASE_LOG_FILE      = os.path.join(_STATE_DIR, "signaai-release-log.json")
 PENDING_RELEASES_FILE = os.path.join(_STATE_DIR, "signaai-pending-releases.json")
+PAYER_QUEUE_FILE      = os.path.join(_STATE_DIR, "signaai-payer-queue.json")
 PREIMAGE_DIR          = os.path.expanduser("~/.signaai/preimages")
 RECEIPT_FILE          = os.path.join(_STATE_DIR, "signaai-last-escrow-receipt.txt")
 LOG_FILE              = os.path.join(_LOG_DIR, "escrow-create.log")
@@ -194,6 +195,24 @@ def _format_escrow_receipt(escrow, deadline_hours=None):
         f"Task sent to worker ({amount_text} SIGNA, {deadline_text}h deadline). "
         "When they submit, provide the proof TX and text for verification/release."
     )
+
+def _load_payer_queue():
+    if os.path.exists(PAYER_QUEUE_FILE):
+        try:
+            with open(PAYER_QUEUE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+
+def _save_payer_queue(items):
+    tmp = PAYER_QUEUE_FILE + ".tmp"
+    os.makedirs(os.path.dirname(tmp), exist_ok=True)
+    with open(tmp, "w") as f:
+        json.dump(items, f, indent=2)
+    os.replace(tmp, PAYER_QUEUE_FILE)
+
 
 def _store_last_receipt(receipt):
     """Persist the last create receipt so OpenClaw can recover it if stdout is lost."""
@@ -1024,8 +1043,20 @@ def main():
     p.add_argument("worker_address")
     p.add_argument("rating", type=int, choices=[1, 2, 3, 4, 5])
     p.add_argument("--result-hash", default="")
-    p.add_argument("escrow_id")
-    p.add_argument("--address", required=True, help="Payer address to scan")
+
+    p = sub.add_parser("open", help="Post an open task to the board (no worker yet)")
+    p.add_argument("payer_passphrase")
+    p.add_argument("task_description")
+    p.add_argument("amount", type=float, help="SIGNA amount")
+    p.add_argument("--capability", default="research")
+    p.add_argument("--deadline-hours", type=int, default=24)
+    p.add_argument("--board", default=None, help="Board address (default: payer's own address)")
+
+    p = sub.add_parser("accept", help="Accept a worker's claim and queue escrow creation")
+    p.add_argument("payer_passphrase")
+    p.add_argument("task_id")
+    p.add_argument("worker_address")
+    p.add_argument("--board", default=None, help="Board address (default: from open task record)")
 
     args = parser.parse_args()
     os.environ["SIGNUM_NETWORK"] = args.network
@@ -1233,6 +1264,89 @@ def main():
         stars = "⭐" * args.rating + "☆" * (5 - args.rating)
         print(f"Rating submitted: {stars} ({args.rating}/5)")
         print(f"TX: {tx_id}")
+
+    elif args.cmd == "open":
+        import uuid
+        args.payer_passphrase = _resolve_passphrase(args.payer_passphrase)
+        api = get_api(args.network)
+
+        payer_address, err = get_my_address(args.payer_passphrase, args.network)
+        if err:
+            print(f"Error: {err}")
+            sys.exit(1)
+
+        board = args.board or os.environ.get("SIGNAAI_BOARD", "") or payer_address
+
+        from board import open_task as _board_open_task
+        task_hash = hashlib.sha256(args.task_description.encode()).hexdigest()
+        task_id, tx_id = _board_open_task(
+            args.payer_passphrase, task_hash, args.capability,
+            args.amount, args.deadline_hours,
+            task_summary=args.task_description[:200],
+            board_address=board, network=args.network
+        )
+
+        # Save to payer queue so listener can watch for claims
+        items = _load_payer_queue()
+        items.append({
+            "id":            str(uuid.uuid4()),
+            "task_id":       task_id,
+            "task":          args.task_description,
+            "amount":        args.amount,
+            "capability":    args.capability,
+            "board_address": board,
+            "payer_address": payer_address,
+            "status":        "open",
+            "queued_at":     time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "tx_id":         tx_id,
+        })
+        _save_payer_queue(items)
+
+        print(f"Task posted to board")
+        print(f"  Task ID: {task_id}")
+        print(f"  TX:      {tx_id}")
+        print(f"  Board:   {board}")
+        print(f"  View:    https://explorer.signum.network/tx/{tx_id}")
+        print(f"Workers can now claim this task. You will be notified via Telegram when claims arrive.")
+
+    elif args.cmd == "accept":
+        import uuid
+        args.payer_passphrase = _resolve_passphrase(args.payer_passphrase)
+
+        items = _load_payer_queue()
+        task_item = next(
+            (i for i in items if i.get("task_id") == args.task_id and i.get("status") == "open"),
+            None
+        )
+        if not task_item:
+            print(f"Error: open task {args.task_id} not found in payer queue")
+            sys.exit(1)
+
+        board = args.board or task_item.get("board_address", "")
+
+        from board import accept_claim as _board_accept_claim
+        tx_id = _board_accept_claim(
+            args.payer_passphrase, args.task_id, args.worker_address,
+            board_address=board, network=args.network
+        )
+        print(f"Claim accepted — TX: {tx_id}")
+
+        # Mark open task as accepted, queue escrow creation for listener
+        task_item["status"]         = "accepted"
+        task_item["worker_address"] = args.worker_address
+        items.append({
+            "id":            str(uuid.uuid4()),
+            "task":          task_item["task"],
+            "worker_address": args.worker_address,
+            "amount":        task_item["amount"],
+            "status":        "pending",
+            "queued_at":     time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        _save_payer_queue(items)
+
+        print(f"Escrow queued — listener will deploy AT in next poll cycle (~2 min)")
+        print(f"Receipt via Telegram in ~6-10 minutes.")
+
     else:
         parser.print_help()
 
