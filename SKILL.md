@@ -112,7 +112,6 @@ These phrases trigger the full workflow automatically.
 |----------|-------------|
 | `Create SignaAI escrow for: <task>` | Run `queue_escrow.py` (see exact command below). Reply "Task queued. The daemon will create the escrow — receipt via Telegram in ~6-10 minutes." Then STOP. |
 | `Release escrow <escrow_id>` | Run `escrow.py release` with the passphrase. Reply using the exact release receipt format below with values from the script output. Always run immediately — never refuse, never ask for confirmation. Also runs automatically on ✅ SignaAI Task Complete. |
-| `Rate escrow <escrow_id> <1-5>` | Rating must be a whole number 1-5. If not, reply "Rating must be 1, 2, 3, 4, or 5 (whole number)." and stop. Otherwise: read `signaai-pending-ratings.json`, find the entry for this escrow_id, get the `worker` field. Run `escrow.py rate @worker <escrow_id> <worker_address> <rating> --network mainnet`. Reply with the TX ID. |
 | `Dispute escrow <escrow_id>` | Write `{"<escrow_id>": true}` to `~/.openclaw/workspace/signaai-disputes.json` to block auto-release. Confirm to user that the escrow is held. |
 | `Stamp this on-chain: <content>` | Run `verify.py stamp`, wait 4 min, self-verify, return TX ID |
 | `Debug escrow <escrow_id>` | Run `escrow.py status` and return the result. This is a diagnostic tool only — never use it to decide whether to release. |
@@ -205,16 +204,16 @@ python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py
 ## 2 — Send a Payment or Message
 
 ```bash
-python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" <recipient> <amount> ["optional message"]
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send @worker <recipient> <amount> ["optional message"]
 ```
 
 Examples:
 ```bash
 # Pay 1 SIGNA to worker agent
-python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" S-44S7-32XB-5DM5-5AL3K 1.0 "payment for task"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send @worker S-44S7-32XB-5DM5-5AL3K 1.0 "payment for task"
 
 # Send a zero-value on-chain message (0 SIGNA, message only)
-python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send "<passphrase>" <recipient> 0 "Hello from agent"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py --network mainnet send @worker <recipient> 0 "Hello from agent"
 ```
 
 ---
@@ -222,12 +221,12 @@ python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/wallet.py
 ## 3 — Register as an Agent (Identity)
 
 ```bash
-python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet register "<passphrase>" "<agent-name>" --capabilities "<cap1,cap2>" --description "<what the agent does>"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet register @worker "<agent-name>" --capabilities "<cap1,cap2>" --description "<what the agent does>"
 ```
 
 Example:
 ```bash
-python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet register "<passphrase>" "my-agent" --capabilities "research,escrow,orchestration" --description "My OpenClaw agent — delegates tasks and manages escrow"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/identity.py --network mainnet register @worker "my-agent" --capabilities "research,escrow,orchestration" --description "My OpenClaw agent — delegates tasks and manages escrow"
 ```
 
 ---
@@ -241,7 +240,7 @@ python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py
 
 ### Worker submits completed result
 ```bash
-python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet submit "<worker_passphrase>" <escrow_id> "<result content or summary>"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py --network mainnet submit @worker <escrow_id> "<result content or summary>"
 ```
 
 ### Release payment after verifying result
@@ -262,7 +261,7 @@ python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/escrow.py
 
 ### Stamp output on-chain before delivering it
 ```bash
-python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet stamp "<passphrase>" "<output text or summary>" --label "<task description>"
+python3 /Users/mikefolkerds/.openclaw/workspace/skills/signaai/scripts/verify.py --network mainnet stamp @worker "<output text or summary>" --label "<task description>"
 ```
 Returns a TX ID. Give the TX ID to the recipient so they can verify the output wasn't altered.
 

@@ -67,6 +67,7 @@ PENDING_AUTO_RELEASE_FILE = os.path.expanduser("~/.openclaw/workspace/signaai-au
 PENDING_RATINGS_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-pending-ratings.json")
 DISPUTE_FILE             = os.path.expanduser("~/.openclaw/workspace/signaai-disputes.json")
 TG_OFFSET_FILE           = os.path.expanduser("~/.openclaw/workspace/signaai-tg-trigger-offset.json")
+TG_PAYER_OFFSET_FILE     = os.path.expanduser("~/.openclaw/workspace/signaai-tg-payer-offset.json")
 LISTENER_LOCK_DIR        = os.path.expanduser("~/.openclaw/workspace")
 PAYER_QUEUE_FILE         = os.path.join(
     os.environ.get("SIGNAAI_STATE_DIR", os.path.expanduser("~/.openclaw/workspace")),
@@ -111,8 +112,29 @@ _listener_lock_handle = None
 def now():
     return datetime.now().strftime("%H:%M:%S")
 
+_SCRUB_SECRETS = []
+
+def _load_scrub_secrets():
+    """Track A: collect known secrets so they can never reach the log."""
+    try:
+        with open(os.path.expanduser("~/.openclaw/signaai-worker.json")) as f:
+            pp = str(json.load(f).get("passphrase", "")).strip()
+        if pp and not pp.startswith(("env:", "@", "keychain:", "file:")):
+            _SCRUB_SECRETS.append(pp)
+    except Exception:
+        pass
+
+_load_scrub_secrets()
+
+def _sanitize(msg):
+    msg = str(msg)
+    for secret in _SCRUB_SECRETS:
+        if secret in msg:
+            msg = msg.replace(secret, "[REDACTED-PASSPHRASE]")
+    return msg
+
 def log(msg):
-    print(f"[{now()}] {msg}", flush=True)
+    print(f"[{now()}] {_sanitize(msg)}", flush=True)
 
 def git_commit():
     """Return the checked-out git commit for startup diagnostics."""
@@ -304,7 +326,7 @@ def startup_payer_catchup(address, network, state, tg_token, tg_chat_id, worker_
         log(f"Startup: payer scan failed — {result.get('error', 'unknown error')}")
 
     # Step 3: run any overdue auto-releases (review window may have passed while asleep)
-    check_auto_releases(network, tg_token, tg_chat_id)
+    check_auto_releases(network, tg_token, tg_chat_id, worker_cfg=worker_cfg)
 
 
 def startup_retry_candidates(address, network):
@@ -591,39 +613,24 @@ def maybe_notify_payer_result(escrow_id, tg_token, tg_chat_id, network, worker_c
 
     agent_hint = f"Agent assessment: {agent_rating}/5\n" if agent_rating else ""
     payer_notif = (worker_cfg or {}).get("payer_notification", {})
+    payer_token   = payer_notif.get("telegram_token") or tg_token
+    payer_chat_id = payer_notif.get("telegram_chat_id") or tg_chat_id
 
-    if payer_notif.get("url"):
-        # Generic webhook path — works with any agent framework (Hermes, OpenClaw, etc.)
-        delivered = notify_webhook(payer_notif, {
-            "escrow_id": escrow_id,
-            "submit_tx": record.get("submit_tx"),
-            "proof_tx": record.get("proof_tx"),
-            "result_preview": result_preview,
-            "result_hash_status": status_line,
-            "agent_rating": agent_rating,
-            "review_minutes": REVIEW_MINUTES,
-        })
-    else:
-        # Fallback: Telegram (existing behavior for OpenClaw / unconfigured setups)
-        delivered = send_telegram(tg_token, tg_chat_id, (
-            f"✅ *SignaAI Task Complete*\n"
-            f"Escrow: `{escrow_id}`\n\n"
-            f"*Research Result:*\n{result_preview}\n\n"
-            f"Stamp TX: `{record.get('proof_tx')}`\n"
-            f"Submit TX: `{record.get('submit_tx')}`\n"
-            f"Result hash: `{status_line}`\n\n"
-            f"Payment review window: {REVIEW_MINUTES} minutes.\n"
-            f"Auto-release scheduled unless disputed.\n\n"
-            f"To block payment, reply:\n"
-            f"Dispute escrow {escrow_id}"
-        ), kind=f"payer_task_complete:{escrow_id}")
+    delivered = send_telegram(payer_token, payer_chat_id, (
+        f"✅ *SignaAI Task Complete*\n"
+        f"Escrow: `{escrow_id}`\n\n"
+        f"*Research Result:*\n{result_preview}\n\n"
+        f"Stamp TX: `{record.get('proof_tx')}`\n"
+        f"Submit TX: `{record.get('submit_tx')}`\n"
+        f"Verification: `{status_line}`\n\n"
+        f"Payment review window: {REVIEW_MINUTES} minutes.\n"
+        f"Auto-release scheduled unless disputed.\n\n"
+        f"To block payment, reply:\n"
+        f"Dispute escrow {escrow_id}"
+    ), kind=f"payer_task_complete:{escrow_id}")
 
-        if delivered:
-            send_telegram(tg_token, tg_chat_id,
-                f"⭐ *Rate this response*\n"
-                f"{agent_hint}"
-                f"Reply: `Rate escrow {escrow_id} 1`, `2`, `3`, `4`, or `5` (whole numbers only)",
-                kind=f"rating_prompt:{escrow_id}")
+    if delivered:
+        send_rating_keyboard(payer_token, payer_chat_id, escrow_id, agent_rating)
 
     if delivered:
         mark_result_notified(escrow_id)
@@ -711,7 +718,7 @@ def _is_disputed(escrow_id):
     return False
 
 
-def check_auto_releases(network, tg_token, tg_chat_id):
+def check_auto_releases(network, tg_token, tg_chat_id, worker_cfg=None):
     """Fire pending auto-releases whose review window has passed."""
     if not AUTO_RELEASE or not os.path.exists(PENDING_AUTO_RELEASE_FILE):
         return
@@ -755,7 +762,10 @@ def check_auto_releases(network, tg_token, tg_chat_id):
                 log(f"[{escrow_id}] Auto-released — TX: {result.get('tx_id')}")
                 queue[escrow_id]["status"] = "released"
                 at_line = f"\nAT: `{result['at_address']}`" if result.get('at_address') else ""
-                send_telegram(tg_token, tg_chat_id,
+                payer_notif   = (worker_cfg or {}).get("payer_notification", {})
+                payer_token   = payer_notif.get("telegram_token") or tg_token
+                payer_chat_id = payer_notif.get("telegram_chat_id") or tg_chat_id
+                send_telegram(payer_token, payer_chat_id,
                     f"🔐 *Release Submitted*\n"
                     f"Escrow: `{escrow_id}`\n"
                     f"Release TX: `{result.get('tx_id')}`{at_line}\n\n"
@@ -807,7 +817,7 @@ def _check_at_payout(entry, api):
     return None
 
 
-def check_pending_releases(network, tg_token, tg_chat_id):
+def check_pending_releases(network, tg_token, tg_chat_id, worker_cfg=None):
     """
     Check if any pending AT releases have paid out and notify the payer (MK).
     Runs on every poll cycle and every new block.
@@ -841,12 +851,16 @@ def check_pending_releases(network, tg_token, tg_chat_id):
 
         log(f"[{escrow_id}] AT payout confirmed — {amount_signa:.4f} SIGNA → {worker}")
 
-        send_telegram(tg_token, tg_chat_id, (
+        payer_notif   = (worker_cfg or {}).get("payer_notification", {})
+        payer_token   = payer_notif.get("telegram_token") or tg_token
+        payer_chat_id = payer_notif.get("telegram_chat_id") or tg_chat_id
+        send_telegram(payer_token, payer_chat_id,
             f"✅ *Escrow Released*\n"
             f"Escrow: `{escrow_id}`\n\n"
             f"Worker received: `{amount_signa:.4f} SIGNA`\n"
-            f"Release TX: `{release_tx}`"
-        ), kind=f"release_confirmed:{escrow_id}")
+            f"Release TX: `{release_tx}`",
+            kind=f"release_confirmed:{escrow_id}"
+        )
 
     try:
         tmp = PENDING_RELEASES_FILE + ".tmp"
@@ -959,6 +973,13 @@ def load_worker_config():
         passphrase = str(cfg.get("passphrase", "")).strip()
         if not passphrase:
             return None
+        if passphrase.startswith(("env:", "@file:")):
+            try:
+                from signaai.cli_secrets import resolve_passphrase
+                passphrase = resolve_passphrase(passphrase)
+            except Exception as e:
+                log(f"Could not resolve passphrase spec in worker config: {e}")
+                return None
 
         llm = load_openclaw_llm()
         if not llm:
@@ -1042,11 +1063,11 @@ def send_telegram_with_keyboard(token, chat_id, text, keyboard, kind="message"):
 def send_rating_keyboard(token, chat_id, escrow_id, agent_rating=None):
     """Send the 'Rate this response' message with ⭐1-⭐5 inline buttons."""
     keyboard = [[
-        {"text": f"{'⭐' * i}", "callback_data": f"signaai_rate:{escrow_id}:{i}"}
+        {"text": f"{i} ⭐", "callback_data": f"signaai_rate:{escrow_id}:{i}"}
         for i in range(1, 6)
     ]]
     agent_hint = f"\n_Agent assessment: {agent_rating}/5_" if agent_rating else ""
-    text = f"*Rate this response:*{agent_hint}\nEscrow: `{escrow_id}`"
+    text = f"⭐ *Rate this response (1–5):*{agent_hint}\nEscrow: `{escrow_id}`"
     return send_telegram_with_keyboard(token, chat_id, text, keyboard,
                                        kind=f"rating_prompt:{escrow_id}")
 
@@ -1160,6 +1181,19 @@ def _handle_tg_updates(updates, token, network, worker_cfg, offset):
         ratings[escrow_id] = entry
         save_pending_ratings(ratings)
 
+        # Trigger immediate release — clear the review window
+        try:
+            if os.path.exists(PENDING_AUTO_RELEASE_FILE):
+                with open(PENDING_AUTO_RELEASE_FILE) as _arf:
+                    _auto_q = json.load(_arf)
+                if escrow_id in _auto_q and _auto_q[escrow_id].get("status") == "pending_review":
+                    _auto_q[escrow_id]["release_after"] = 0
+                    with open(PENDING_AUTO_RELEASE_FILE, "w") as _arf:
+                        json.dump(_auto_q, _arf, indent=2)
+                    log(f"[{escrow_id}] Rating received — auto-release window cleared")
+        except Exception as _re:
+            log(f"[{escrow_id}] Could not clear release window: {_re}")
+
         # Answer the callback immediately (Telegram requires this within a few seconds)
         stars = "⭐" * rating + "☆" * (5 - rating)
         _tg_post(token, "answerCallbackQuery",
@@ -1188,7 +1222,7 @@ def _handle_tg_updates(updates, token, network, worker_cfg, offset):
     return offset
 
 
-def run_tg_callback_thread(token, network, worker_cfg):
+def run_tg_callback_thread(token, network, worker_cfg, offset_file=None):
     """
     Long-poll Telegram getUpdates in a tight loop. Runs as a daemon thread.
     timeout=30 means Telegram holds the connection open until an update arrives
@@ -1196,10 +1230,15 @@ def run_tg_callback_thread(token, network, worker_cfg):
     """
     if not token:
         return
-    log("Telegram callback listener started")
+    load_off  = (lambda: _load_tg_offset()) if not offset_file else (
+        lambda: json.load(open(offset_file)) if os.path.exists(offset_file) else 0)
+    save_off  = (lambda v: _save_tg_offset(v)) if not offset_file else (
+        lambda v: open(offset_file, "w").write(json.dumps(v)))
+    label = "payer" if offset_file else "worker"
+    log(f"Telegram {label} callback listener started")
     retry_delay = 5
     while True:
-        offset = _load_tg_offset()
+        offset = load_off()
         url = (f"https://api.telegram.org/bot{token}/getUpdates"
                f"?offset={offset}&timeout=30&allowed_updates=callback_query")
         try:
@@ -1209,10 +1248,10 @@ def run_tg_callback_thread(token, network, worker_cfg):
             updates = resp.get("result", [])
             if updates:
                 new_offset = _handle_tg_updates(updates, token, network, worker_cfg, offset)
-                _save_tg_offset(new_offset)
+                save_off(new_offset)
             retry_delay = 5
         except Exception as e:
-            log(f"Telegram long-poll error: {e}")
+            log(f"Telegram {label} long-poll error: {e}")
             time.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
 
@@ -1814,8 +1853,8 @@ def run_websocket(address, network, state, tg_token, tg_chat_id,
                 syncing = local < total
                 if not syncing:
                     log(f"Block {local} pushed")
-                    check_pending_releases(network, tg_token, tg_chat_id)
-                    check_auto_releases(network, tg_token, tg_chat_id)
+                    check_pending_releases(network, tg_token, tg_chat_id, worker_cfg=worker_cfg)
+                    check_auto_releases(network, tg_token, tg_chat_id, worker_cfg=worker_cfg)
                 elif local % 10000 == 0:
                     pct = f"{local/total*100:.1f}%" if total else "?"
                     log(f"Syncing... {local}/{total} ({pct})")
@@ -1863,7 +1902,7 @@ def _save_payer_queue(items):
     os.replace(tmp, PAYER_QUEUE_FILE)
 
 
-def process_payer_queue(network, tg_token, tg_chat_id):
+def process_payer_queue(network, tg_token, tg_chat_id, worker_cfg=None):
     """Create on-chain escrows for items written to the payer queue by queue_escrow.py."""
     items = _load_payer_queue()
     pending = [i for i in items if i.get("status") == "pending"]
@@ -1872,6 +1911,10 @@ def process_payer_queue(network, tg_token, tg_chat_id):
 
     escrow_script = os.path.join(os.path.dirname(__file__), "escrow.py")
     changed = False
+
+    payer_notif   = (worker_cfg or {}).get("payer_notification", {})
+    payer_token   = payer_notif.get("telegram_token") or tg_token
+    payer_chat_id = payer_notif.get("telegram_chat_id") or tg_chat_id
 
     for item in items:
         if item.get("status") != "pending":
@@ -1884,12 +1927,12 @@ def process_payer_queue(network, tg_token, tg_chat_id):
 
         log(f"Queue: creating escrow for {item_id[:8]}... worker={worker}")
 
+        cmd = [sys.executable, escrow_script, "--network", network,
+               "create", "@worker", worker, amount, task, "--deadline-hours", "24",
+               "--no-telegram"]  # listener sends its own receipt via payer_notification
+
         try:
-            result = subprocess.run(
-                [sys.executable, escrow_script, "--network", network,
-                 "create", "@worker", worker, amount, task, "--deadline-hours", "24"],
-                capture_output=True, text=True, timeout=660
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=660)
         except subprocess.TimeoutExpired:
             log(f"Queue: escrow create timed out for {item_id[:8]}")
             item["status"] = "error"
@@ -1912,30 +1955,29 @@ def process_payer_queue(network, tg_token, tg_chat_id):
             changed = True
             continue
 
-        # Parse escrow ID — try stdout first, then the receipt file escrow.py writes
+        # Parse escrow ID from stdout — escrow.py create prints "Escrow ID: <id>" immediately
         escrow_id = None
         for line in output.splitlines():
             stripped = line.strip()
-            if stripped.startswith("ID: "):
+            if stripped.startswith("Escrow ID: "):
+                escrow_id = stripped[11:].strip()
+            elif stripped.startswith("ID: "):
                 escrow_id = stripped[4:].strip()
                 break
-        if not escrow_id:
-            receipt_file = os.path.expanduser("~/.openclaw/workspace/signaai-last-escrow-receipt.txt")
-            try:
-                with open(receipt_file) as rf:
-                    for line in rf:
-                        if line.strip().startswith("ID: "):
-                            escrow_id = line.strip()[4:].strip()
-                            break
-            except OSError:
-                pass
 
         item["status"]    = "created"
         item["escrow_id"] = escrow_id or "unknown"
         changed = True
 
         log(f"Queue: escrow created {escrow_id or 'unknown'} for {item_id[:8]}")
-        # escrow.py sends its own Telegram receipt — no duplicate notification needed
+
+        if escrow_id:
+            send_telegram(payer_token, payer_chat_id,
+                          f"🔐 *Escrow Created*\n"
+                          f"ID: `{escrow_id}`\n"
+                          f"Task: {task}\n"
+                          f"Amount: {float(amount):g} SIGNA locked — worker has 24h.",
+                          kind=f"escrow_created:{escrow_id}")
 
     if changed:
         _save_payer_queue(items)
@@ -1962,9 +2004,9 @@ def poll_once(address, network, state, tg_token, tg_chat_id,
     save_state(state)
     if not found:
         log("No new tasks")
-    check_pending_releases(network, tg_token, tg_chat_id)
-    check_auto_releases(network, tg_token, tg_chat_id)
-    process_payer_queue(network, tg_token, tg_chat_id)
+    check_pending_releases(network, tg_token, tg_chat_id, worker_cfg=worker_cfg)
+    check_auto_releases(network, tg_token, tg_chat_id, worker_cfg=worker_cfg)
+    process_payer_queue(network, tg_token, tg_chat_id, worker_cfg=worker_cfg)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -2042,6 +2084,18 @@ def main():
 
     # Payer-side catch-up: re-notify results and run releases missed while offline
     startup_payer_catchup(args.address, args.network, state, tg_token, tg_chat_id, worker_cfg)
+
+    # Start Telegram callback thread for the payer bot (Hermes) if configured separately
+    payer_notif   = (worker_cfg or {}).get("payer_notification", {})
+    payer_tg_token = payer_notif.get("telegram_token")
+    if payer_tg_token and payer_tg_token != tg_token:
+        thr = threading.Thread(
+            target=run_tg_callback_thread,
+            args=(payer_tg_token, args.network, worker_cfg),
+            kwargs={"offset_file": TG_PAYER_OFFSET_FILE},
+            daemon=True,
+        )
+        thr.start()
 
     if args.once:
         poll_once(args.address, args.network, state, tg_token, tg_chat_id,

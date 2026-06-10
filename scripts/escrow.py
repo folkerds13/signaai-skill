@@ -234,9 +234,16 @@ def _log(msg):
 
 def _resolve_passphrase(passphrase):
     """
-    Resolve '@worker' sentinel to the actual passphrase from signaai-worker.json.
-    Pass '@worker' in place of a literal passphrase — the script reads it from disk.
+    Resolve a passphrase spec to the literal passphrase.
+
+    Supported specs (via signaai.cli_secrets): '-' (prompt), 'env:VAR',
+    '@worker', '@file:PATH'. Legacy '@<key>' reads that key from
+    signaai-worker.json. Anything else is returned as-is.
     """
+    spec = str(passphrase).strip() if passphrase else ""
+    if spec == "-" or spec.startswith("env:") or spec == "@worker" or spec.startswith("@file:"):
+        from signaai.cli_secrets import resolve_passphrase as _sdk_resolve
+        return _sdk_resolve(spec)
     if passphrase and str(passphrase).strip().startswith("@"):
         key = passphrase.strip()[1:]  # strip the '@'
         worker_files = [
@@ -977,6 +984,7 @@ def main():
     p.add_argument("amount", type=float, help="SIGNA amount")
     p.add_argument("task_description")
     p.add_argument("--deadline-hours", type=int, default=24)
+    p.add_argument("--no-telegram", action="store_true", help="Skip Telegram receipt notification")
 
     # create-bg (internal — spawned by create to run AT deployment in background)
     p = sub.add_parser("create-bg", help="(internal) background AT deployment")
@@ -1024,6 +1032,7 @@ def main():
 
     if args.cmd == "create":
         import subprocess, tempfile
+        passphrase_spec = args.payer_passphrase  # unresolved spec — safe to persist
         args.payer_passphrase = _resolve_passphrase(args.payer_passphrase)
         print(f"Creating escrow on {args.network}...", flush=True)
 
@@ -1064,7 +1073,9 @@ def main():
         # ── Write setup to temp file for background process ───────────────────
         setup = {
             "network": args.network,
-            "payer_passphrase": args.payer_passphrase,
+            # Store the spec, not the literal — create-bg resolves it at use,
+            # so @worker/env: passphrases never land in the temp file.
+            "payer_passphrase": passphrase_spec,
             "worker_address": args.worker_address,
             "amount": args.amount,
             "task_description": args.task_description,
@@ -1094,23 +1105,24 @@ def main():
             print(f"Error reading setup file: {e}", flush=True)
             sys.exit(1)
         result, err = create_escrow(
-            setup['payer_passphrase'], setup['worker_address'], setup['amount'],
-            setup['task_description'], setup['deadline_hours'], setup['network'],
-            _skip_dedup=True,
+            _resolve_passphrase(setup['payer_passphrase']), setup['worker_address'],
+            setup['amount'], setup['task_description'], setup['deadline_hours'],
+            setup['network'], _skip_dedup=True,
         )
         if err:
             print(f"Error: {err}", flush=True)
         else:
             receipt = _format_escrow_receipt(result, deadline_hours=setup['deadline_hours'])
             _store_last_receipt(receipt)
-            tg_token, tg_chat_id = _load_tg_config()
-            _send_telegram(tg_token, tg_chat_id,
-                           f"🔐 *Escrow Created*\n"
-                           f"ID: `{result['escrow_id']}`\n"
-                           f"Record TX: `{result.get('record_tx') or result.get('create_tx')}`\n"
-                           f"Fund TX: `{result.get('fund_tx')}`\n\n"
-                           f"Task sent to worker ({float(setup['amount']):g} SIGNA, "
-                           f"{float(setup['deadline_hours']):g}h deadline).")
+            if not getattr(args, 'no_telegram', False):
+                tg_token, tg_chat_id = _load_tg_config()
+                _send_telegram(tg_token, tg_chat_id,
+                               f"🔐 *Escrow Created*\n"
+                               f"ID: `{result['escrow_id']}`\n"
+                               f"Record TX: `{result.get('record_tx') or result.get('create_tx')}`\n"
+                               f"Fund TX: `{result.get('fund_tx')}`\n\n"
+                               f"Task sent to worker ({float(setup['amount']):g} SIGNA, "
+                               f"{float(setup['deadline_hours']):g}h deadline).")
             print()
             print(receipt, flush=True)
 
